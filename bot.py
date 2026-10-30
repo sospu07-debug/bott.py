@@ -43,8 +43,8 @@ print("Dummy server started", flush=True)
 
 TURSO_HTTP_URL = "https://botyanal-sospu07-debug.aws-ap-northeast-1.turso.io/v2/pipeline"
 
-TURSO_TOKEN = "eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9.eyJhIjoicnciLCJpYXQiOjE3OTA0NTY4MjAsImlkIjoiMDFhMGRmOGEtZGIwMS03NDQ4LWE2NzctZjU5YmZjMGFjM2NiIiwia2lkIjoidWlBSkk2aWNYTFozeThmN0R3ck5RN0doNkVOeWM5dDQyNTVkTGxkMVJBOCIsInJpZCI6IjIxNjg3ZGJjLTI1NzItNDM2Mi1iZTg3LTU0MDBlMmFlY2JlOCJ9.aMUqH4ywPwFKHcQK_PBkyrBXynDK6RXEIUSg3CSS_0r85b0xPlhs-eEC5ZyplSJzIDS7SCJmMd_zgbVxA3ZzCQ"
-TELEGRAM_TOKEN = "8784722345:AAFY7gkzM1Zzsrjlb6zzu5ed5GM-k0QOCUs"
+TURSO_TOKEN = os.environ.get("TURSO_TOKEN", "")
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "")
 RATE = 0.75
 AMMAN_TZ = timezone(timedelta(hours=3))
 
@@ -284,6 +284,14 @@ def init_db():
             "timestamp TEXT)",
             None
         ),
+        (
+            "CREATE TABLE IF NOT EXISTS debts (id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER NOT NULL,direction TEXT NOT NULL,person TEXT NOT NULL,amount REAL NOT NULL,currency TEXT NOT NULL,debt_date TEXT NOT NULL,notes TEXT,created_at TEXT NOT NULL)",
+            None
+        ),
+        (
+            "CREATE TABLE IF NOT EXISTS debt_payments (id INTEGER PRIMARY KEY AUTOINCREMENT,debt_id INTEGER NOT NULL,user_id INTEGER NOT NULL,amount REAL NOT NULL,payment_date TEXT NOT NULL,notes TEXT)",
+            None
+        ),
     ]
 
     db_execute_many(statements)
@@ -427,6 +435,324 @@ def get_days(user_id, month):
     )
 
     return [row[0] for row in rows if row[0]]
+
+
+
+# ==================== الإحصائيات المالية ====================
+
+def _period_dates(kind):
+    today = now_amman().date()
+    if kind == "daily":
+        start = today
+        end = start + timedelta(days=1)
+    elif kind == "weekly":
+        start = today - timedelta(days=today.weekday())
+        end = start + timedelta(days=7)
+    elif kind == "yearly":
+        start = today.replace(month=1, day=1)
+        end = start.replace(year=start.year + 1)
+    else:
+        start = today.replace(day=1)
+        end = start.replace(year=start.year + (start.month == 12), month=1 if start.month == 12 else start.month + 1)
+    return start, end
+
+
+def _previous_dates(kind, start):
+    if kind == "daily":
+        return start - timedelta(days=1), start
+    if kind == "weekly":
+        return start - timedelta(days=7), start
+    if kind == "yearly":
+        return start.replace(year=start.year - 1), start
+    previous_end = start
+    previous_start = (previous_end - timedelta(days=1)).replace(day=1)
+    return previous_start, previous_end
+
+
+def get_financial_stats(user_id, start, end):
+    rows = db_execute(
+        "SELECT category, amount, reason, timestamp FROM transactions "
+        "WHERE user_id = ? AND timestamp >= ? AND timestamp < ? ORDER BY timestamp",
+        [int(user_id), start.isoformat(), end.isoformat()]
+    )
+    out = {"income_jod": 0.0, "expense_jod": 0.0, "income_usd": 0.0,
+           "expense_usd": 0.0, "categories": {}, "days": {}}
+    for category, amount, reason, stamp in rows:
+        amount = float(amount or 0)
+        currency = "usd" if category == "dollar" else "jod"
+        day = str(stamp)[:10]
+        bucket = out["days"].setdefault(day, {"income": 0.0, "expense": 0.0})
+        if amount >= 0:
+            out["income_" + currency] += amount
+            bucket["income"] += amount
+        else:
+            value = abs(amount)
+            out["expense_" + currency] += value
+            bucket["expense"] += value
+            label = {"cash": "كاش", "bank": "بنك", "dollar": "دولار"}.get(category, str(category))
+            out["categories"][label] = out["categories"].get(label, 0.0) + value
+    return out
+
+
+def _stats_text(stats, label):
+    msg = [
+        "الإحصائيات " + label, "-------------------",
+        "JOD | الدخل: {:.2f} | المصروفات: {:.2f} | الصافي: {:.2f}".format(
+            stats["income_jod"], stats["expense_jod"], stats["income_jod"] - stats["expense_jod"]),
+        "USD | الدخل: {:.2f} | المصروفات: {:.2f} | الصافي: {:.2f}".format(
+            stats["income_usd"], stats["expense_usd"], stats["income_usd"] - stats["expense_usd"]),
+        "", "توزيع المصروفات حسب وسيلة الدفع:"
+    ]
+    if stats["categories"]:
+        for name, amount in sorted(stats["categories"].items()):
+            msg.append("{}: {:.2f}".format(name, amount))
+        msg.append("تنبيه: التصنيف القديم يمثل وسيلة الدفع وليس تصنيفًا تفصيليًا.")
+    else:
+        msg.append("لا توجد مصروفات مسجلة.")
+    msg += ["", "مخطط الدخل والمصروفات اليومي:"]
+    for day, vals in sorted(stats["days"].items())[-14:]:
+        msg.append("{} دخل {} مصروف {}".format(
+            day[5:], "█" * min(12, int(vals["income"] / 5)) or "·",
+            "▓" * min(12, int(vals["expense"] / 5)) or "·"))
+    return "\n".join(msg)
+
+
+async def show_financial_stats(query, user_id, kind="monthly"):
+    labels = {"daily": "اليومية", "weekly": "الأسبوعية", "monthly": "الشهرية", "yearly": "السنوية"}
+    start, end = _period_dates(kind)
+    prev_start, prev_end = _previous_dates(kind, start)
+    current = get_financial_stats(user_id, start, end)
+    previous = get_financial_stats(user_id, prev_start, prev_end)
+    msg = _stats_text(current, labels[kind])
+    msg += "\n\nمقارنة بالفترة السابقة:\n"
+    for key, label in (("income_jod", "دخل JOD"), ("expense_jod", "مصروفات JOD"),
+                       ("income_usd", "دخل USD"), ("expense_usd", "مصروفات USD")):
+        msg += "{}: {:+.2f}\n".format(label, current[key] - previous[key])
+    kb = [
+        [InlineKeyboardButton("يومي", callback_data="stats_daily"), InlineKeyboardButton("أسبوعي", callback_data="stats_weekly")],
+        [InlineKeyboardButton("شهري", callback_data="stats_monthly"), InlineKeyboardButton("سنوي", callback_data="stats_yearly")],
+        [InlineKeyboardButton("رجوع", callback_data="menu_money")]
+    ]
+    await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(kb))
+
+
+# ==================== إدارة الديون ====================
+
+def create_debt(user_id, direction, person, amount, currency, debt_date, notes=""):
+    amount = float(amount)
+    if amount <= 0 or currency not in ("JOD", "USD"):
+        raise ValueError("المبلغ أو العملة غير صالحين")
+    db_execute(
+        "INSERT INTO debts (user_id,direction,person,amount,currency,debt_date,notes,created_at) "
+        "VALUES (?,?,?,?,?,?,?,?)",
+        [int(user_id), direction, str(person), amount, currency, debt_date, str(notes), now_amman().isoformat()])
+
+
+def get_debt_by_id(debt_id, user_id):
+    rows = db_execute(
+        "SELECT d.id,d.direction,d.person,d.amount,d.currency,d.debt_date,d.notes,"
+        "COALESCE((SELECT SUM(p.amount) FROM debt_payments p WHERE p.debt_id=d.id AND p.user_id=d.user_id),0) "
+        "FROM debts d WHERE d.id=? AND d.user_id=?", [int(debt_id), int(user_id)])
+    return rows[0] if rows else None
+
+
+def get_debts(user_id, direction=None):
+    sql = ("SELECT d.id,d.direction,d.person,d.amount,d.currency,d.debt_date,d.notes,"
+           "COALESCE((SELECT SUM(p.amount) FROM debt_payments p WHERE p.debt_id=d.id AND p.user_id=d.user_id),0) "
+           "FROM debts d WHERE d.user_id=?")
+    params = [int(user_id)]
+    if direction:
+        sql += " AND d.direction=?"
+        params.append(direction)
+    sql += " ORDER BY d.debt_date DESC,d.id DESC"
+    return db_execute(sql, params)
+
+
+def get_debt_payments(debt_id, user_id):
+    return db_execute("SELECT id,amount,payment_date,notes FROM debt_payments "
+                      "WHERE debt_id=? AND user_id=? ORDER BY payment_date DESC,id DESC",
+                      [int(debt_id), int(user_id)])
+
+
+def add_debt_payment(debt_id, user_id, amount):
+    debt = get_debt_by_id(debt_id, user_id)
+    amount = float(amount)
+    if not debt:
+        raise ValueError("الدين غير موجود")
+    remaining = float(debt[3]) - float(debt[7])
+    if amount <= 0 or amount > remaining + 0.000001:
+        raise ValueError("الدفعة يجب أن تكون موجبة ولا تتجاوز المبلغ المتبقي")
+    db_execute("INSERT INTO debt_payments (debt_id,user_id,amount,payment_date,notes) VALUES (?,?,?,?,?)",
+               [int(debt_id), int(user_id), amount, now_amman().isoformat(), ""])
+
+
+def update_debt(debt_id, user_id, field, value):
+    if field not in ("person", "amount", "currency", "debt_date", "notes", "direction"):
+        raise ValueError("حقل غير صالح")
+    debt = get_debt_by_id(debt_id, user_id)
+    if not debt:
+        raise ValueError("الدين غير موجود")
+    if field == "amount":
+        value = float(value)
+        if value <= 0 or value + 0.000001 < float(debt[7]):
+            raise ValueError("المبلغ الجديد أقل من المبالغ المدفوعة")
+    if field == "currency":
+        if value not in ("JOD", "USD") or float(debt[7]) > 0:
+            raise ValueError("لا يمكن تغيير العملة بعد تسجيل دفعات")
+    if field == "direction" and value not in ("owed_to_me", "i_owe"):
+        raise ValueError("نوع الدين غير صالح")
+    db_execute("UPDATE debts SET " + field + "=? WHERE id=? AND user_id=?",
+               [value, int(debt_id), int(user_id)])
+
+
+def delete_debt(debt_id, user_id):
+    db_execute_many([
+        ("DELETE FROM debt_payments WHERE debt_id=? AND user_id=?", [int(debt_id), int(user_id)]),
+        ("DELETE FROM debts WHERE id=? AND user_id=?", [int(debt_id), int(user_id)])])
+
+
+def _debt_status(total, paid):
+    if paid <= 0:
+        return "غير مسدد"
+    return "مسدد" if paid + 0.000001 >= total else "مسدد جزئيًا"
+
+
+async def show_debts_menu(query, user_id):
+    owed, owe = {"JOD": 0.0, "USD": 0.0}, {"JOD": 0.0, "USD": 0.0}
+    for row in get_debts(user_id):
+        target = owed if row[1] == "owed_to_me" else owe
+        target[row[4]] += max(0.0, float(row[3]) - float(row[7]))
+    msg = ("إدارة الديون 💰\n-------------------\nلي عند الآخرين: {:.2f} JOD | {:.2f} USD\n"
+           "عليّ للآخرين: {:.2f} JOD | {:.2f} USD").format(
+               owed["JOD"], owed["USD"], owe["JOD"], owe["USD"])
+    kb = [[InlineKeyboardButton("إضافة دين", callback_data="debt_add")],
+          [InlineKeyboardButton("ديون لي عند أشخاص", callback_data="debt_list_owed")],
+          [InlineKeyboardButton("ديون عليّ", callback_data="debt_list_owe")],
+          [InlineKeyboardButton("رجوع", callback_data="menu_money")]]
+    await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(kb))
+
+
+async def show_debt_list(query, user_id, direction):
+    rows = get_debts(user_id, direction)
+    if not rows:
+        await query.edit_message_text("لا توجد ديون.", reply_markup=InlineKeyboardMarkup(
+            [[InlineKeyboardButton("رجوع", callback_data="debts_menu")]]))
+        return
+    kb = []
+    for row in rows:
+        remaining = max(0.0, float(row[3]) - float(row[7]))
+        label = "{} | {:.2f} {} | {}".format(row[2], remaining, row[4], _debt_status(float(row[3]), float(row[7])))
+        kb.append([InlineKeyboardButton(label[:60], callback_data="debt_view_" + str(row[0]))])
+    kb.append([InlineKeyboardButton("رجوع", callback_data="debts_menu")])
+    await query.edit_message_text("قائمة الديون:", reply_markup=InlineKeyboardMarkup(kb))
+
+
+async def show_debt_detail(query, user_id, debt_id):
+    d = get_debt_by_id(debt_id, user_id)
+    if not d:
+        await query.edit_message_text("الدين غير موجود.")
+        return
+    paid = float(d[7])
+    remaining = max(0.0, float(d[3]) - paid)
+    msg = ("الشخص: {}\nالنوع: {}\nالأصل: {:.2f} {}\nالمدفوع: {:.2f} {}\nالمتبقي: {:.2f} {}\n"
+           "الحالة: {}\nالتاريخ: {}\nملاحظات: {}").format(
+        d[2], "لي عنده" if d[1] == "owed_to_me" else "عليّ له",
+        float(d[3]), d[4], paid, d[4], remaining, d[4],
+        _debt_status(float(d[3]), paid), d[5], d[6] or "—")
+    payments = get_debt_payments(debt_id, user_id)
+    if payments:
+        msg += "\n\nسجل الدفعات:"
+        for p in payments[:10]:
+            msg += "\n• {:.2f} {} | {}".format(float(p[1]), d[4], str(p[2])[:10])
+    kb = []
+    if remaining > 0:
+        kb.append([InlineKeyboardButton("تسجيل دفعة", callback_data="debt_pay_" + str(debt_id))])
+    kb += [[InlineKeyboardButton("تعديل", callback_data="debt_edit_" + str(debt_id))],
+           [InlineKeyboardButton("حذف", callback_data="debt_delete_" + str(debt_id))],
+           [InlineKeyboardButton("رجوع", callback_data="debt_list_owed" if d[1] == "owed_to_me" else "debt_list_owe")]]
+    await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(kb))
+
+
+async def debt_name_input(update, context):
+    value = update.message.text.strip()
+    if not value:
+        await update.message.reply_text("اكتب اسم الشخص:")
+        return DEBT_NAME
+    context.user_data["debt_person"] = value
+    await update.message.reply_text("اكتب المبلغ:")
+    return DEBT_AMOUNT
+
+
+async def debt_amount_input(update, context):
+    try:
+        value = float(update.message.text.strip().replace(",", "."))
+        if value <= 0:
+            raise ValueError
+    except ValueError:
+        await update.message.reply_text("اكتب مبلغًا صحيحًا أكبر من صفر:")
+        return DEBT_AMOUNT
+    context.user_data["debt_amount"] = value
+    kb = [[InlineKeyboardButton("JOD دينار أردني", callback_data="debt_currency_JOD")],
+          [InlineKeyboardButton("USD دولار أمريكي", callback_data="debt_currency_USD")]]
+    await update.message.reply_text("اختر العملة:", reply_markup=InlineKeyboardMarkup(kb))
+    return DEBT_CURRENCY
+
+
+async def debt_date_input(update, context):
+    value = update.message.text.strip()
+    try:
+        datetime.strptime(value, "%Y-%m-%d")
+    except ValueError:
+        await update.message.reply_text("أدخل التاريخ بصيغة YYYY-MM-DD:")
+        return DEBT_DATE
+    context.user_data["debt_date"] = value
+    await update.message.reply_text("اكتب ملاحظات أو اضغط تخطي:",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("تخطي", callback_data="debt_skip_notes")]]))
+    return DEBT_NOTES
+
+
+async def _save_debt(update, context, notes):
+    try:
+        create_debt(update.effective_user.id, context.user_data["debt_direction"],
+                    context.user_data["debt_person"], context.user_data["debt_amount"],
+                    context.user_data["debt_currency"], context.user_data["debt_date"], notes)
+        await update.effective_message.reply_text("تم تسجيل الدين.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("إدارة الديون", callback_data="debts_menu")]]))
+    except Exception as e:
+        print("debt save error:", repr(e), flush=True)
+        await update.effective_message.reply_text("تعذر حفظ الدين. تحقق من البيانات وحاول مجددًا.")
+    return ConversationHandler.END
+
+
+async def debt_payment_input(update, context):
+    debt_id = context.user_data.get("debt_payment_id")
+    try:
+        amount = float(update.message.text.strip().replace(",", "."))
+        add_debt_payment(debt_id, update.effective_user.id, amount)
+    except Exception as e:
+        await update.message.reply_text(str(e) or "تعذر تسجيل الدفعة:")
+        return DEBT_PAYMENT_AMOUNT
+    await update.message.reply_text("تم تسجيل الدفعة وتحديث المتبقي.",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("عرض الدين", callback_data="debt_view_" + str(debt_id))]]))
+    return ConversationHandler.END
+
+
+async def debt_edit_input(update, context):
+    debt_id = context.user_data.get("debt_edit_id")
+    field = context.user_data.get("debt_edit_field")
+    value = update.message.text.strip()
+    try:
+        if field == "debt_date":
+            datetime.strptime(value, "%Y-%m-%d")
+        if field == "amount":
+            value = float(value.replace(",", "."))
+        update_debt(debt_id, update.effective_user.id, field, value)
+    except Exception as e:
+        await update.message.reply_text(str(e) or "تعذر تعديل الدين:")
+        return DEBT_EDIT_VALUE
+    await update.message.reply_text("تم تعديل الدين.",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("عرض الدين", callback_data="debt_view_" + str(debt_id))]]))
+    return ConversationHandler.END
 
 
 # ============================================================
@@ -727,8 +1053,10 @@ KIND_AR = {
     HABIT_YEAR,
     HABIT_MONTH,
     HABIT_DAY,
-    HABIT_HOUR
-) = range(14)
+    HABIT_HOUR,
+    DEBT_NAME, DEBT_AMOUNT, DEBT_CURRENCY, DEBT_DATE, DEBT_NOTES,
+    DEBT_PAYMENT_AMOUNT, DEBT_EDIT_FIELD, DEBT_EDIT_VALUE
+) = range(22)
 
 
 CAT_NAMES = {
@@ -977,6 +1305,8 @@ async def send_csv(update, context, date_filter, filename):
 def main_keyboard():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("فلوس", callback_data="menu_money")],
+        [InlineKeyboardButton("الإحصائيات 📊", callback_data="stats_menu")],
+        [InlineKeyboardButton("الديون 💰", callback_data="debts_menu")],
         [InlineKeyboardButton("ملاحظات", callback_data="menu_notes")],
         [InlineKeyboardButton("صلاة", callback_data="menu_prayer")],
         [InlineKeyboardButton("عاداتي", callback_data="menu_habits")],
@@ -1005,6 +1335,8 @@ async def money_menu(update, context):
             InlineKeyboardButton("دولار", callback_data="cat_dollar"),
         ],
         [InlineKeyboardButton("سجل", callback_data="log_months")],
+        [InlineKeyboardButton("الإحصائيات 📊", callback_data="stats_menu")],
+        [InlineKeyboardButton("إدارة الديون 💰", callback_data="debts_menu")],
         [InlineKeyboardButton("رجوع", callback_data="back_main")],
     ]
 
