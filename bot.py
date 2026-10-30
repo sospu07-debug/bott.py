@@ -698,6 +698,10 @@ async def debt_amount_input(update, context):
     return DEBT_CURRENCY
 
 
+async def debt_notes_input(update, context):
+    return await _save_debt(update, context, update.message.text.strip())
+
+
 async def debt_date_input(update, context):
     value = update.message.text.strip()
     try:
@@ -1054,9 +1058,9 @@ KIND_AR = {
     HABIT_MONTH,
     HABIT_DAY,
     HABIT_HOUR,
-    DEBT_NAME, DEBT_AMOUNT, DEBT_CURRENCY, DEBT_DATE, DEBT_NOTES,
+    DEBT_TYPE, DEBT_NAME, DEBT_AMOUNT, DEBT_CURRENCY, DEBT_DATE, DEBT_NOTES,
     DEBT_PAYMENT_AMOUNT, DEBT_EDIT_FIELD, DEBT_EDIT_VALUE
-) = range(22)
+) = range(23)
 
 
 CAT_NAMES = {
@@ -3416,8 +3420,7 @@ def main():
                 CallbackQueryHandler(category_selected)
             ],
             DEBT_NOTES: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND,
-                    lambda update, context: _save_debt(update, context, update.message.text.strip())),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, debt_notes_input),
                 CallbackQueryHandler(category_selected)
             ],
             DEBT_PAYMENT_AMOUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, debt_payment_input)],
