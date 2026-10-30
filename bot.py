@@ -5,6 +5,14 @@ import traceback
 import calendar
 from datetime import datetime, timezone, timedelta
 from http.server import HTTPServer, BaseHTTPRequestHandler
+from io import BytesIO
+
+try:
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+except Exception:
+    plt = None
 
 import requests as http_requests
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -534,6 +542,31 @@ async def show_financial_stats(query, user_id, kind="monthly"):
         [InlineKeyboardButton("رجوع", callback_data="menu_money")]
     ]
     await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(kb))
+    # صورة رسم بياني اختيارية؛ يبقى العرض النصي متاحًا إذا لم تكن matplotlib مثبتة.
+    if plt is not None and current["days"]:
+        try:
+            dates = sorted(current["days"])
+            incomes = [current["days"][d]["income"] for d in dates]
+            expenses = [current["days"][d]["expense"] for d in dates]
+            fig, ax = plt.subplots(figsize=(10, 4))
+            positions = list(range(len(dates)))
+            width = 0.38
+            ax.bar([x - width / 2 for x in positions], incomes, width, label="Income")
+            ax.bar([x + width / 2 for x in positions], expenses, width, label="Expenses")
+            ax.set_xticks(positions)
+            ax.set_xticklabels([d[5:] for d in dates], rotation=45, ha="right")
+            ax.set_title("Daily income and expenses")
+            ax.set_ylabel("Amount (original currency units)")
+            ax.legend()
+            ax.grid(axis="y", alpha=0.25)
+            fig.tight_layout()
+            image_buffer = BytesIO()
+            fig.savefig(image_buffer, format="png", dpi=140)
+            plt.close(fig)
+            image_buffer.seek(0)
+            await query.message.reply_photo(photo=image_buffer, caption="الرسم البياني للفترة المختارة")
+        except Exception as chart_error:
+            print("statistics chart error:", repr(chart_error), flush=True)
 
 
 # ==================== إدارة الديون ====================
