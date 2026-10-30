@@ -1657,6 +1657,126 @@ async def category_selected(update, context):
         await money_menu(update, context)
         return ConversationHandler.END
 
+
+    # الإحصائيات
+    if data == "stats_menu":
+        await show_financial_stats(query, update.effective_user.id, "monthly")
+        return ConversationHandler.END
+    if data.startswith("stats_"):
+        kind = data.replace("stats_", "")
+        if kind in ("daily", "weekly", "monthly", "yearly"):
+            await show_financial_stats(query, update.effective_user.id, kind)
+        return ConversationHandler.END
+
+    # الديون
+    if data == "debts_menu":
+        await show_debts_menu(query, update.effective_user.id)
+        return ConversationHandler.END
+    if data == "debt_add":
+        kb = [[InlineKeyboardButton("لي دين عند شخص", callback_data="debt_type_owed_to_me")],
+              [InlineKeyboardButton("عليّ دين لشخص", callback_data="debt_type_i_owe")],
+              [InlineKeyboardButton("إلغاء", callback_data="debts_menu")]]
+        await query.edit_message_text("اختر نوع الدين:", reply_markup=InlineKeyboardMarkup(kb))
+        return DEBT_TYPE
+    if data.startswith("debt_type_"):
+        direction = data.replace("debt_type_", "")
+        if direction not in ("owed_to_me", "i_owe"):
+            return ConversationHandler.END
+        context.user_data["debt_direction"] = direction
+        await query.edit_message_text("اكتب اسم الشخص:")
+        return DEBT_NAME
+    if data.startswith("debt_currency_"):
+        currency = data.replace("debt_currency_", "")
+        if currency not in ("JOD", "USD"):
+            return DEBT_CURRENCY
+        context.user_data["debt_currency"] = currency
+        today = now_amman().strftime("%Y-%m-%d")
+        kb = [[InlineKeyboardButton("اليوم " + today, callback_data="debt_date_today")]]
+        await query.edit_message_text("أدخل تاريخ الدين بصيغة YYYY-MM-DD أو اختر اليوم:", reply_markup=InlineKeyboardMarkup(kb))
+        return DEBT_DATE
+    if data == "debt_date_today":
+        context.user_data["debt_date"] = now_amman().strftime("%Y-%m-%d")
+        await query.edit_message_text("اكتب ملاحظات اختيارية أو اضغط تخطي:",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("تخطي", callback_data="debt_skip_notes")]]))
+        return DEBT_NOTES
+    if data == "debt_skip_notes":
+        return await _save_debt(update, context, "")
+    if data == "debt_list_owed":
+        await show_debt_list(query, update.effective_user.id, "owed_to_me")
+        return ConversationHandler.END
+    if data == "debt_list_owe":
+        await show_debt_list(query, update.effective_user.id, "i_owe")
+        return ConversationHandler.END
+    if data.startswith("debt_view_"):
+        await show_debt_detail(query, update.effective_user.id, int(data.replace("debt_view_", "")))
+        return ConversationHandler.END
+    if data.startswith("debt_pay_"):
+        debt_id = int(data.replace("debt_pay_", ""))
+        if not get_debt_by_id(debt_id, update.effective_user.id):
+            await query.edit_message_text("الدين غير موجود.")
+            return ConversationHandler.END
+        context.user_data["debt_payment_id"] = debt_id
+        await query.edit_message_text("اكتب قيمة الدفعة:")
+        return DEBT_PAYMENT_AMOUNT
+    if data.startswith("debt_delete_"):
+        debt_id = int(data.replace("debt_delete_", ""))
+        delete_debt(debt_id, update.effective_user.id)
+        await query.edit_message_text("تم حذف الدين وسجل دفعاته.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("إدارة الديون", callback_data="debts_menu")]]))
+        return ConversationHandler.END
+    if data.startswith("debt_edit_"):
+        debt_id = int(data.replace("debt_edit_", ""))
+        debt = get_debt_by_id(debt_id, update.effective_user.id)
+        if not debt:
+            await query.edit_message_text("الدين غير موجود.")
+            return ConversationHandler.END
+        context.user_data["debt_edit_id"] = debt_id
+        kb = [[InlineKeyboardButton("اسم الشخص", callback_data="debt_edit_field_person")],
+              [InlineKeyboardButton("المبلغ", callback_data="debt_edit_field_amount")],
+              [InlineKeyboardButton("العملة", callback_data="debt_edit_currency")],
+              [InlineKeyboardButton("نوع الدين", callback_data="debt_edit_direction")],
+              [InlineKeyboardButton("التاريخ", callback_data="debt_edit_field_debt_date")],
+              [InlineKeyboardButton("الملاحظات", callback_data="debt_edit_field_notes")],
+              [InlineKeyboardButton("رجوع", callback_data="debt_view_" + str(debt_id))]]
+        await query.edit_message_text("اختر الحقل:", reply_markup=InlineKeyboardMarkup(kb))
+        return DEBT_EDIT_FIELD
+    if data.startswith("debt_edit_field_"):
+        field = data.replace("debt_edit_field_", "")
+        if field not in ("person", "amount", "debt_date", "notes"):
+            return DEBT_EDIT_FIELD
+        context.user_data["debt_edit_field"] = field
+        prompts = {"person": "اكتب الاسم الجديد:", "amount": "اكتب المبلغ الأصلي الجديد:",
+                   "debt_date": "اكتب التاريخ YYYY-MM-DD:", "notes": "اكتب الملاحظات الجديدة:"}
+        await query.edit_message_text(prompts[field])
+        return DEBT_EDIT_VALUE
+    if data == "debt_edit_currency":
+        kb = [[InlineKeyboardButton("JOD", callback_data="debt_edit_set_currency_JOD"),
+               InlineKeyboardButton("USD", callback_data="debt_edit_set_currency_USD")]]
+        await query.edit_message_text("اختر العملة (لا يمكن تغييرها بعد وجود دفعات):", reply_markup=InlineKeyboardMarkup(kb))
+        return DEBT_EDIT_FIELD
+    if data.startswith("debt_edit_set_currency_"):
+        try:
+            update_debt(context.user_data["debt_edit_id"], update.effective_user.id,
+                        "currency", data.rsplit("_", 1)[1])
+        except Exception as e:
+            await query.answer(str(e)[:180], show_alert=True)
+            return DEBT_EDIT_FIELD
+        await query.edit_message_text("تم تعديل العملة.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("عرض الدين", callback_data="debt_view_" + str(context.user_data["debt_edit_id"]))]]))
+        return ConversationHandler.END
+    if data == "debt_edit_direction":
+        kb = [[InlineKeyboardButton("لي عند شخص", callback_data="debt_edit_set_direction_owed_to_me")],
+              [InlineKeyboardButton("عليّ لشخص", callback_data="debt_edit_set_direction_i_owe")]]
+        await query.edit_message_text("اختر نوع الدين:", reply_markup=InlineKeyboardMarkup(kb))
+        return DEBT_EDIT_FIELD
+    if data.startswith("debt_edit_set_direction_"):
+        update_debt(context.user_data["debt_edit_id"], update.effective_user.id,
+                    "direction", data.replace("debt_edit_set_direction_", ""))
+        await query.edit_message_text("تم تعديل نوع الدين.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("عرض الدين", callback_data="debt_view_" + str(context.user_data["debt_edit_id"]))]]))
+        return ConversationHandler.END
+
+
     # ========================================================
     # العادات
     # ========================================================
@@ -3286,6 +3406,24 @@ def main():
             HABIT_HOUR: [
                 CallbackQueryHandler(category_selected)
             ],
+
+            DEBT_TYPE: [CallbackQueryHandler(category_selected)],
+            DEBT_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, debt_name_input)],
+            DEBT_AMOUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, debt_amount_input)],
+            DEBT_CURRENCY: [CallbackQueryHandler(category_selected)],
+            DEBT_DATE: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, debt_date_input),
+                CallbackQueryHandler(category_selected)
+            ],
+            DEBT_NOTES: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND,
+                    lambda update, context: _save_debt(update, context, update.message.text.strip())),
+                CallbackQueryHandler(category_selected)
+            ],
+            DEBT_PAYMENT_AMOUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, debt_payment_input)],
+            DEBT_EDIT_FIELD: [CallbackQueryHandler(category_selected)],
+            DEBT_EDIT_VALUE: [MessageHandler(filters.TEXT & ~filters.COMMAND, debt_edit_input)],
+
         },
 
         fallbacks=[
