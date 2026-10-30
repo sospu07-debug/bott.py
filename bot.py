@@ -51,8 +51,9 @@ print("Dummy server started", flush=True)
 
 TURSO_HTTP_URL = "https://botyanal-sospu07-debug.aws-ap-northeast-1.turso.io/v2/pipeline"
 
-TURSO_TOKEN = os.environ.get("TURSO_TOKEN", "")
-TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "")
+
+TURSO_TOKEN = "eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9.eyJhIjoicnciLCJpYXQiOjE3OTA0NTY4MjAsImlkIjoiMDFhMGRmOGEtZGIwMS03NDQ4LWE2NzctZjU5YmZjMGFjM2NiIiwia2lkIjoidWlBSkk2aWNYTFozeThmN0R3ck5RN0doNkVOeWM5dDQyNTVkTGxkMVJBOCIsInJpZCI6IjIxNjg3ZGJjLTI1NzItNDM2Mi1iZTg3LTU0MDBlMmFlY2JlOCJ9.aMUqH4ywPwFKHcQK_PBkyrBXynDK6RXEIUSg3CSS_0r85b0xPlhs-eEC5ZyplSJzIDS7SCJmMd_zgbVxA3ZzCQ"
+TELEGRAM_TOKEN = "8784722345:AAFY7gkzM1Zzsrjlb6zzu5ed5GM-k0QOCUs"
 RATE = 0.75
 AMMAN_TZ = timezone(timedelta(hours=3))
 
