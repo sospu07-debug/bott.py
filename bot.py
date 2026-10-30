@@ -489,14 +489,14 @@ def get_financial_stats(user_id, start, end):
         amount = float(amount or 0)
         currency = "usd" if category == "dollar" else "jod"
         day = str(stamp)[:10]
-        bucket = out["days"].setdefault(day, {"income": 0.0, "expense": 0.0})
+        bucket = out["days"].setdefault(day, {"income_jod": 0.0, "expense_jod": 0.0, "income_usd": 0.0, "expense_usd": 0.0})
         if amount >= 0:
             out["income_" + currency] += amount
-            bucket["income"] += amount
+            bucket["income_" + currency] += amount
         else:
             value = abs(amount)
             out["expense_" + currency] += value
-            bucket["expense"] += value
+            bucket["expense_" + currency] += value
             label = {"cash": "كاش", "bank": "بنك", "dollar": "دولار"}.get(category, str(category))
             out["categories"][label] = out["categories"].get(label, 0.0) + value
     return out
@@ -519,9 +519,8 @@ def _stats_text(stats, label):
         msg.append("لا توجد مصروفات مسجلة.")
     msg += ["", "مخطط الدخل والمصروفات اليومي:"]
     for day, vals in sorted(stats["days"].items())[-14:]:
-        msg.append("{} دخل {} مصروف {}".format(
-            day[5:], "█" * min(12, int(vals["income"] / 5)) or "·",
-            "▓" * min(12, int(vals["expense"] / 5)) or "·"))
+        msg.append("{} | JOD دخل {:.2f} مصروف {:.2f} | USD دخل {:.2f} مصروف {:.2f}".format(
+            day[5:], vals["income_jod"], vals["expense_jod"], vals["income_usd"], vals["expense_usd"]))
     return "\n".join(msg)
 
 
@@ -546,17 +545,21 @@ async def show_financial_stats(query, user_id, kind="monthly"):
     if plt is not None and current["days"]:
         try:
             dates = sorted(current["days"])
-            incomes = [current["days"][d]["income"] for d in dates]
-            expenses = [current["days"][d]["expense"] for d in dates]
+            income_jod = [current["days"][d]["income_jod"] for d in dates]
+            expense_jod = [current["days"][d]["expense_jod"] for d in dates]
+            income_usd = [current["days"][d]["income_usd"] for d in dates]
+            expense_usd = [current["days"][d]["expense_usd"] for d in dates]
             fig, ax = plt.subplots(figsize=(10, 4))
             positions = list(range(len(dates)))
             width = 0.38
-            ax.bar([x - width / 2 for x in positions], incomes, width, label="Income")
-            ax.bar([x + width / 2 for x in positions], expenses, width, label="Expenses")
+            ax.bar([x - 1.5 * width for x in positions], income_jod, width, label="Income JOD")
+            ax.bar([x - 0.5 * width for x in positions], expense_jod, width, label="Expenses JOD")
+            ax.bar([x + 0.5 * width for x in positions], income_usd, width, label="Income USD")
+            ax.bar([x + 1.5 * width for x in positions], expense_usd, width, label="Expenses USD")
             ax.set_xticks(positions)
             ax.set_xticklabels([d[5:] for d in dates], rotation=45, ha="right")
             ax.set_title("Daily income and expenses")
-            ax.set_ylabel("Amount (original currency units)")
+            ax.set_ylabel("Amount (JOD and USD shown separately)")
             ax.legend()
             ax.grid(axis="y", alpha=0.25)
             fig.tight_layout()
