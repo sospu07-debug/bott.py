@@ -2369,7 +2369,7 @@ async def category_selected(update, context):
     if data.startswith("amount_key_"):
         key = data.replace("amount_key_", "")
         value = str(context.user_data.get("amount_buffer", ""))
-        if key in tuple(str(n) for n in range(1, 10)):
+        if key in tuple(str(n) for n in range(10)):
             if len(value) < 12:
                 value += key
         elif key == "back":
@@ -2432,6 +2432,7 @@ def amount_keypad_markup(value):
         [InlineKeyboardButton(str(n), callback_data="amount_key_" + str(n)) for n in (7, 8, 9)],
         [
             InlineKeyboardButton("⌫ حذف", callback_data="amount_key_back"),
+            InlineKeyboardButton("0", callback_data="amount_key_0"),
             InlineKeyboardButton(".", callback_data="amount_key_dot"),
         ],
         [
@@ -2447,38 +2448,6 @@ async def show_amount_keypad(query, context):
     value = context.user_data.get("amount_buffer", "")
     msg, markup = amount_keypad_markup(value)
     await query.edit_message_text(msg, reply_markup=markup)
-
-
-async def enter_amount(update, context):
-    text = update.message.text.strip()
-
-    try:
-        amount = float(text)
-
-        if amount <= 0:
-            raise ValueError
-
-    except ValueError:
-        await update.message.reply_text(
-            "اكتب رقم صحيح موجب:"
-        )
-        return ENTER_AMOUNT
-
-    context.user_data["amount"] = amount
-
-    kb = [[
-        InlineKeyboardButton(
-            "سكيب",
-            callback_data="skip_reason"
-        )
-    ]]
-
-    await update.message.reply_text(
-        "اكتب وصف العملية أو اضغط سكيب:",
-        reply_markup=InlineKeyboardMarkup(kb)
-    )
-
-    return ENTER_REASON
 
 
 async def enter_reason(update, context):
@@ -3431,10 +3400,6 @@ def main():
             ],
 
             ENTER_AMOUNT: [
-                MessageHandler(
-                    filters.TEXT & ~filters.COMMAND,
-                    enter_amount
-                ),
                 CallbackQueryHandler(category_selected)
             ],
 
