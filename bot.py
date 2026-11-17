@@ -2365,6 +2365,39 @@ async def category_selected(update, context):
 
         return CHOOSE_ACTION
 
+
+    if data.startswith("amount_key_"):
+        key = data.replace("amount_key_", "")
+        value = str(context.user_data.get("amount_buffer", ""))
+        if key in tuple(str(n) for n in range(1, 10)):
+            if len(value) < 12:
+                value += key
+        elif key == "back":
+            value = value[:-1]
+        elif key == "dot":
+            if "." not in value:
+                value = (value or "0") + "."
+        elif key == "done":
+            try:
+                amount = float(value)
+                if amount <= 0:
+                    raise ValueError
+            except ValueError:
+                await query.answer("أدخل مبلغًا أكبر من صفر", show_alert=True)
+                return ENTER_AMOUNT
+            context.user_data["amount"] = amount
+            context.user_data.pop("amount_buffer", None)
+            kb = [[InlineKeyboardButton("سكيب", callback_data="skip_reason")]]
+            await query.edit_message_text(
+                "اكتب وصف العملية أو اضغط سكيب:",
+                reply_markup=InlineKeyboardMarkup(kb)
+            )
+            return ENTER_REASON
+        context.user_data["amount_buffer"] = value
+        msg, markup = amount_keypad_markup(value)
+        await query.edit_message_text(msg, reply_markup=markup)
+        return ENTER_AMOUNT
+
     if data.startswith("act_"):
         action = data.replace("act_", "")
 
@@ -2374,8 +2407,11 @@ async def category_selected(update, context):
 
         act_name = "إضافة" if action == "add" else "خصم"
 
+        context.user_data["amount_buffer"] = ""
+        msg, markup = amount_keypad_markup("")
         await query.edit_message_text(
-            act_name + " على " + CAT_NAMES[category] + "\n\nاكتب المبلغ:"
+            act_name + " على " + CAT_NAMES[category] + "\n\n" + msg,
+            reply_markup=markup
         )
 
         return ENTER_AMOUNT
@@ -2386,6 +2422,32 @@ async def category_selected(update, context):
 # ============================================================
 # إدخال العمليات المالية
 # ============================================================
+
+
+def amount_keypad_markup(value):
+    value = str(value or "")
+    rows = [
+        [InlineKeyboardButton(str(n), callback_data="amount_key_" + str(n)) for n in (1, 2, 3)],
+        [InlineKeyboardButton(str(n), callback_data="amount_key_" + str(n)) for n in (4, 5, 6)],
+        [InlineKeyboardButton(str(n), callback_data="amount_key_" + str(n)) for n in (7, 8, 9)],
+        [
+            InlineKeyboardButton("⌫ حذف", callback_data="amount_key_back"),
+            InlineKeyboardButton(".", callback_data="amount_key_dot"),
+        ],
+        [
+            InlineKeyboardButton("تأكيد المبلغ ✓", callback_data="amount_key_done"),
+            InlineKeyboardButton("إلغاء", callback_data="menu_money"),
+        ],
+    ]
+    shown = value if value else "0"
+    return "اكتب المبلغ باستخدام لوحة الأرقام:\n\n💰 المبلغ: " + shown, InlineKeyboardMarkup(rows)
+
+
+async def show_amount_keypad(query, context):
+    value = context.user_data.get("amount_buffer", "")
+    msg, markup = amount_keypad_markup(value)
+    await query.edit_message_text(msg, reply_markup=markup)
+
 
 async def enter_amount(update, context):
     text = update.message.text.strip()
@@ -3372,7 +3434,8 @@ def main():
                 MessageHandler(
                     filters.TEXT & ~filters.COMMAND,
                     enter_amount
-                )
+                ),
+                CallbackQueryHandler(category_selected)
             ],
 
             ENTER_REASON: [
