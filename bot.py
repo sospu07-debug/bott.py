@@ -315,21 +315,47 @@ def init_db():
     existing_columns = {
         str(row[1]).lower() for row in debt_columns if len(row) > 1
     }
-    if "person" not in existing_columns:
+
+    # أضف كل أعمدة نظام الديون التي قد تكون غائبة عن قاعدة قديمة.
+    # SQLite لا يحدّث بنية الجدول عند استخدام CREATE TABLE IF NOT EXISTS.
+    debt_migrations = {
+        "direction": "TEXT NOT NULL DEFAULT 'owed_to_me'",
+        "person": "TEXT NOT NULL DEFAULT ''",
+        "amount": "REAL NOT NULL DEFAULT 0",
+        "currency": "TEXT NOT NULL DEFAULT 'JOD'",
+        "debt_date": "TEXT NOT NULL DEFAULT ''",
+        "notes": "TEXT",
+        "created_at": "TEXT NOT NULL DEFAULT ''",
+    }
+    for column, definition in debt_migrations.items():
+        if column not in existing_columns:
+            db_execute(
+                "ALTER TABLE debts ADD COLUMN {} {}".format(column, definition)
+            )
+
+    # نقل القيم من أسماء الأعمدة القديمة عند وجودها.
+    if "name" in existing_columns:
         db_execute(
-            "ALTER TABLE debts ADD COLUMN person TEXT NOT NULL DEFAULT ''"
+            "UPDATE debts SET person=name "
+            "WHERE person='' AND name IS NOT NULL"
         )
-        # إذا كان الإصدار القديم يخزن اسم الشخص في عمود name، انقل البيانات.
-        if "name" in existing_columns:
-            db_execute(
-                "UPDATE debts SET person=name "
-                "WHERE person='' AND name IS NOT NULL"
-            )
-        elif "person_name" in existing_columns:
-            db_execute(
-                "UPDATE debts SET person=person_name "
-                "WHERE person='' AND person_name IS NOT NULL"
-            )
+    elif "person_name" in existing_columns:
+        db_execute(
+            "UPDATE debts SET person=person_name "
+            "WHERE person='' AND person_name IS NOT NULL"
+        )
+    if "type" in existing_columns:
+        db_execute(
+            "UPDATE debts SET direction=CASE "
+            "WHEN lower(type) IN ('i_owe','payable','علي') THEN 'i_owe' "
+            "ELSE 'owed_to_me' END "
+            "WHERE direction='owed_to_me'"
+        )
+    if "date" in existing_columns:
+        db_execute(
+            "UPDATE debts SET debt_date=date "
+            "WHERE debt_date='' AND date IS NOT NULL"
+        )
 
 
 # ============================================================
