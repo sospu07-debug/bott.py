@@ -309,6 +309,28 @@ def init_db():
 
     db_execute_many(statements)
 
+    # ترحيل قواعد البيانات القديمة: CREATE TABLE IF NOT EXISTS لا يضيف
+    # الأعمدة الجديدة إلى جدول debts إذا كان موجوداً من إصدار سابق.
+    debt_columns = db_execute("PRAGMA table_info(debts)")
+    existing_columns = {
+        str(row[1]).lower() for row in debt_columns if len(row) > 1
+    }
+    if "person" not in existing_columns:
+        db_execute(
+            "ALTER TABLE debts ADD COLUMN person TEXT NOT NULL DEFAULT ''"
+        )
+        # إذا كان الإصدار القديم يخزن اسم الشخص في عمود name، انقل البيانات.
+        if "name" in existing_columns:
+            db_execute(
+                "UPDATE debts SET person=name "
+                "WHERE person='' AND name IS NOT NULL"
+            )
+        elif "person_name" in existing_columns:
+            db_execute(
+                "UPDATE debts SET person=person_name "
+                "WHERE person='' AND person_name IS NOT NULL"
+            )
+
 
 # ============================================================
 # المصاري
