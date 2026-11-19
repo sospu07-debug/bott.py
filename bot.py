@@ -529,70 +529,213 @@ def _stats_text(stats, label):
     return "\n".join(msg)
 
 
+
+def build_full_report_chart(user_id):
+    if plt is None:
+        return None
+
+    tx = db_execute(
+        "SELECT category, amount, timestamp FROM transactions WHERE user_id=? ORDER BY timestamp",
+        [int(user_id)]
+    )
+    debts = get_debts(user_id)
+    body = db_execute(
+        "SELECT weight, height, date FROM body_log WHERE user_id=? ORDER BY date",
+        [int(user_id)]
+    )
+    prayers = db_execute("SELECT COUNT(*) FROM prayers WHERE user_id=?", [int(user_id)])
+    habits = db_execute("SELECT COUNT(*) FROM habits WHERE user_id=?", [int(user_id)])
+    notes = db_execute("SELECT COUNT(*) FROM notes WHERE user_id=?", [int(user_id)])
+
+    monthly = {}
+    totals = {
+        "income_jod": 0.0, "expense_jod": 0.0,
+        "income_usd": 0.0, "expense_usd": 0.0,
+        "cash": 0.0, "bank": 0.0, "dollar": 0.0
+    }
+    for category, amount, stamp in tx:
+        amount = float(amount or 0)
+        currency = "usd" if category == "dollar" else "jod"
+        month = str(stamp)[:7]
+        bucket = monthly.setdefault(month, {
+            "income_jod": 0.0, "expense_jod": 0.0,
+            "income_usd": 0.0, "expense_usd": 0.0
+        })
+        if amount >= 0:
+            totals["income_" + currency] += amount
+            bucket["income_" + currency] += amount
+        else:
+            totals["expense_" + currency] += abs(amount)
+            bucket["expense_" + currency] += abs(amount)
+        if category in ("cash", "bank", "dollar"):
+            totals[category] += amount
+
+    debt_totals = {
+        "owed_to_me": {"JOD": 0.0, "USD": 0.0},
+        "i_owe": {"JOD": 0.0, "USD": 0.0}
+    }
+    for d in debts:
+        remaining = max(0.0, float(d[3]) - float(d[7]))
+        if d[1] in debt_totals and d[4] in ("JOD", "USD"):
+            debt_totals[d[1]][d[4]] += remaining
+
+    fig, axes = plt.subplots(2, 2, figsize=(13, 9))
+    ax = axes[0][0]
+    months = sorted(monthly)[-12:]
+    if months:
+        x = list(range(len(months)))
+        w = 0.19
+        series = [
+            ("income_jod", "Income JOD", -1.5*w),
+            ("expense_jod", "Expenses JOD", -0.5*w),
+            ("income_usd", "Income USD", 0.5*w),
+            ("expense_usd", "Expenses USD", 1.5*w)
+        ]
+        for key, label, offset in series:
+            ax.bar([v + offset for v in x], [monthly[m][key] for m in months], w, label=label)
+        ax.set_xticks(x)
+        ax.set_xticklabels(months, rotation=40, ha="right")
+        ax.set_title("Income and expenses by month")
+        ax.legend(fontsize=7)
+    else:
+        ax.text(0.5, 0.5, "No financial transactions", ha="center", va="center")
+        ax.set_title("Financial history")
+    ax.grid(axis="y", alpha=0.2)
+
+    ax = axes[0][1]
+    labels = ["Receivable JOD", "Payable JOD", "Receivable USD", "Payable USD"]
+    values = [
+        debt_totals["owed_to_me"]["JOD"], debt_totals["i_owe"]["JOD"],
+        debt_totals["owed_to_me"]["USD"], debt_totals["i_owe"]["USD"]
+    ]
+    ax.bar(labels, values)
+    ax.set_title("Outstanding debts (currencies separate)")
+    ax.tick_params(axis="x", labelrotation=25, labelsize=8)
+    ax.grid(axis="y", alpha=0.2)
+
+    ax = axes[1][0]
+    body_sorted = sorted(body, key=lambda row: str(row[2]))
+    if body_sorted:
+        dates = [str(row[2]) for row in body_sorted]
+        weights = [float(row[0]) for row in body_sorted if row[0] is not None]
+        weight_dates = [dates[i] for i, row in enumerate(body_sorted) if row[0] is not None]
+        if weights:
+            ax.plot(weight_dates, weights, marker="o", label="Weight")
+            ax.tick_params(axis="x", labelrotation=35, labelsize=7)
+            ax.legend()
+        ax.set_title("Weight history")
+    else:
+        ax.text(0.5, 0.5, "No body records", ha="center", va="center")
+        ax.set_title("Weight history")
+    ax.grid(alpha=0.2)
+
+    ax = axes[1][1]
+    counts = [
+        ("Transactions", len(tx)),
+        ("Debts", len(debts)),
+        ("Body logs", len(body)),
+        ("Prayer records", int(prayers[0][0] or 0) if prayers else 0),
+        ("Habits", int(habits[0][0] or 0) if habits else 0),
+        ("Notes", int(notes[0][0] or 0) if notes else 0)
+    ]
+    ax.bar([x[0] for x in counts], [x[1] for x in counts])
+    ax.set_title("All saved records")
+    ax.tick_params(axis="x", labelrotation=25, labelsize=8)
+    ax.grid(axis="y", alpha=0.2)
+
+    fig.suptitle(
+        "Complete personal report | Cash {:.2f} | Bank {:.2f} | USD {:.2f}\n"
+        "JOD net {:.2f} | USD net {:.2f}".format(
+            totals["cash"], totals["bank"], totals["dollar"],
+            totals["income_jod"] - totals["expense_jod"],
+            totals["income_usd"] - totals["expense_usd"]),
+        fontsize=12
+    )
+    fig.tight_layout(rect=[0, 0, 1, 0.93])
+    output = BytesIO()
+    fig.savefig(output, format="png", dpi=150)
+    plt.close(fig)
+    output.seek(0)
+    return output
+
+
 async def show_financial_stats(query, user_id, kind="monthly"):
     labels = {"daily": "اليومية", "weekly": "الأسبوعية", "monthly": "الشهرية", "yearly": "السنوية"}
     start, end = _period_dates(kind)
     prev_start, prev_end = _previous_dates(kind, start)
     current = get_financial_stats(user_id, start, end)
     previous = get_financial_stats(user_id, prev_start, prev_end)
-
     msg = _stats_text(current, labels[kind])
     msg += "\n\nمقارنة بالفترة السابقة:\n"
     for key, label in (("income_jod", "دخل JOD"), ("expense_jod", "مصروفات JOD"),
                        ("income_usd", "دخل USD"), ("expense_usd", "مصروفات USD")):
         msg += "{}: {:+.2f}\n".format(label, current[key] - previous[key])
-
     kb = [
         [InlineKeyboardButton("يومي", callback_data="stats_daily"), InlineKeyboardButton("أسبوعي", callback_data="stats_weekly")],
         [InlineKeyboardButton("شهري", callback_data="stats_monthly"), InlineKeyboardButton("سنوي", callback_data="stats_yearly")],
+        [InlineKeyboardButton("التقرير الكامل", callback_data="stats_full_report")],
         [InlineKeyboardButton("رجوع", callback_data="menu_money")]
     ]
     markup = InlineKeyboardMarkup(kb)
-
     if plt is None or not current["days"]:
-        await query.edit_message_text(msg + "\n\nلا تتوفر بيانات كافية للرسم البياني أو مكتبة الرسم غير مثبتة.",
+        await query.edit_message_text(msg + "\n\nلا توجد بيانات كافية للرسم أو مكتبة الرسم غير متاحة.",
                                       reply_markup=markup)
         return
-
-    image_buffer = None
+    output = None
     try:
         dates = sorted(current["days"])
-        income_jod = [current["days"][d]["income_jod"] for d in dates]
-        expense_jod = [current["days"][d]["expense_jod"] for d in dates]
-        income_usd = [current["days"][d]["income_usd"] for d in dates]
-        expense_usd = [current["days"][d]["expense_usd"] for d in dates]
-
-        fig, ax = plt.subplots(figsize=(10, 5))
-        positions = list(range(len(dates)))
+        fig, ax = plt.subplots(figsize=(11, 5))
+        x = list(range(len(dates)))
         width = 0.20
-        ax.bar([x - 1.5 * width for x in positions], income_jod, width, label="Income JOD")
-        ax.bar([x - 0.5 * width for x in positions], expense_jod, width, label="Expenses JOD")
-        ax.bar([x + 0.5 * width for x in positions], income_usd, width, label="Income USD")
-        ax.bar([x + 1.5 * width for x in positions], expense_usd, width, label="Expenses USD")
-        ax.set_xticks(positions)
+        for key, label, offset in (
+            ("income_jod", "Income JOD", -1.5*width),
+            ("expense_jod", "Expenses JOD", -0.5*width),
+            ("income_usd", "Income USD", 0.5*width),
+            ("expense_usd", "Expenses USD", 1.5*width)
+        ):
+            ax.bar([v+offset for v in x], [current["days"][d][key] for d in dates], width, label=label)
+        ax.set_xticks(x)
         ax.set_xticklabels([d[5:] for d in dates], rotation=45, ha="right")
-        ax.set_title("Financial statistics - " + labels[kind])
-        ax.set_ylabel("Amounts (currencies separated)")
+        ax.set_title("Financial analysis - " + labels[kind])
+        ax.set_ylabel("Amounts (JOD and USD separate)")
         ax.legend()
-        ax.grid(axis="y", alpha=0.25)
+        ax.grid(axis="y", alpha=0.2)
         fig.tight_layout()
-        image_buffer = BytesIO()
-        fig.savefig(image_buffer, format="png", dpi=140)
+        output = BytesIO()
+        fig.savefig(output, format="png", dpi=140)
         plt.close(fig)
-        image_buffer.seek(0)
-
-        caption = msg[:1000]
-        await query.message.reply_photo(photo=image_buffer, caption=caption, reply_markup=markup)
+        output.seek(0)
+        await query.message.reply_photo(photo=output, caption=msg[:900], reply_markup=markup)
         try:
             await query.delete_message()
         except Exception:
             pass
-    except Exception as chart_error:
-        print("statistics chart error:", repr(chart_error), flush=True)
+    except Exception as e:
+        print("stats chart error:", repr(e), flush=True)
         await query.edit_message_text(msg, reply_markup=markup)
     finally:
-        if image_buffer is not None:
-            image_buffer.close()
+        if output:
+            output.close()
+
+
+async def send_full_report(update, context):
+    query = update.callback_query
+    await query.answer()
+    try:
+        output = build_full_report_chart(update.effective_user.id)
+        if output is None:
+            await query.message.reply_text(
+                "مكتبة الرسوم غير مثبتة. ثبّت matplotlib لعرض التقرير الكامل."
+            )
+            return
+        await query.message.reply_photo(
+            photo=output,
+            caption="التقرير الكامل لجميع السجلات المحفوظة: المعاملات، الأرصدة، الديون، الوزن، الصلاة، العادات والملاحظات."
+        )
+        output.close()
+    except Exception as e:
+        print("full report error:", repr(e), flush=True)
+        await query.message.reply_text("تعذر إنشاء التقرير الكامل. راجع سجل تشغيل البوت.")
 
 
 # ==================== إدارة الديون ====================
@@ -1722,6 +1865,9 @@ async def category_selected(update, context):
 
 
     # الإحصائيات
+    if data == "stats_full_report":
+        await send_full_report(update, context)
+        return ConversationHandler.END
     if data == "stats_menu":
         await show_financial_stats(query, update.effective_user.id, "monthly")
         return ConversationHandler.END
