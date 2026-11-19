@@ -208,12 +208,45 @@ def db_execute(sql, params=None):
 
 
 def db_execute_many(statements):
-    # نفّذ كل عبارة عبر نفس عميل db_execute المستخدم بباقي البوت.
-    # تجنّب إرسال دفعة pipeline كبيرة بصيغة يرفضها endpoint الخاص بـ Turso.
-    results = []
+    headers = {
+        "Authorization": "Bearer " + TURSO_TOKEN,
+        "Content-Type": "application/json",
+    }
+
+    reqs = []
+
     for sql, params in statements:
-        results.append(db_execute(sql, params))
-    return results
+        if params:
+            reqs.append({
+                "type": "execute",
+                "stmt": {
+                    "sql": sql,
+                    "args": _build_args(params)
+                }
+            })
+        else:
+            reqs.append({
+                "type": "execute",
+                "stmt": {"sql": sql}
+            })
+
+    reqs.append({"type": "close"})
+
+    r = http_requests.post(
+        TURSO_HTTP_URL,
+        json={"requests": reqs},
+        headers=headers,
+        timeout=30
+    )
+
+    if r.status_code != 200:
+        raise Exception(
+            "Turso HTTP {}: {}".format(
+                r.status_code, r.text[:200]
+            )
+        )
+
+    return r.json()
 
 
 def init_db():
