@@ -4,7 +4,7 @@ import threading
 import traceback
 import calendar
 from datetime import datetime, timezone, timedelta
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from io import BytesIO
 
 try:
@@ -27,22 +27,26 @@ from telegram.ext import (
 # ============================================================
 #
 def _keep_alive():
-    port = int(os.environ.get("PORT", 10000))
+    port = int(os.environ.get("PORT", "10000"))
 
     class H(BaseHTTPRequestHandler):
         def do_GET(self):
+            if self.path not in ("/", "/health", "/healthz"):
+                self.send_response(404)
+                self.end_headers()
+                return
+            body = b"OK"
             self.send_response(200)
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
             self.end_headers()
-            self.wfile.write(b"alive")
+            self.wfile.write(body)
 
-        def log_message(self, *a):
+        def log_message(self, *args):
             pass
 
-    HTTPServer(("0.0.0.0", port), H).serve_forever()
-
-
-threading.Thread(target=_keep_alive, daemon=True).start()
-print("Dummy server started", flush=True)
+    server = ThreadingHTTPServer(("0.0.0.0", port), H)
+    server.serve_forever()
 
 
 # ============================================================
