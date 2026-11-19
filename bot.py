@@ -730,22 +730,32 @@ async def show_financial_stats(query, user_id, kind="monthly"):
 
 async def send_full_report(update, context):
     query = update.callback_query
-    await query.answer()
+    output = None
     try:
+        # callback query is answered once in the main callback handler.
         output = build_full_report_chart(update.effective_user.id)
         if output is None:
             await query.message.reply_text(
-                "مكتبة الرسوم غير مثبتة. ثبّت matplotlib لعرض التقرير الكامل."
+                "مكتبة الرسم غير متاحة. تأكد من تثبيت matplotlib ثم أعد تشغيل الخدمة."
             )
             return
+        output.seek(0)
         await query.message.reply_photo(
             photo=output,
             caption="التقرير الكامل لجميع السجلات المحفوظة: المعاملات، الأرصدة، الديون، الوزن، الصلاة، العادات والملاحظات."
         )
-        output.close()
     except Exception as e:
+        traceback.print_exc()
         print("full report error:", repr(e), flush=True)
-        await query.message.reply_text("تعذر إنشاء التقرير الكامل. راجع سجل تشغيل البوت.")
+        try:
+            await query.message.reply_text(
+                "تعذر إنشاء الصورة: " + str(e)[:700]
+            )
+        except Exception:
+            pass
+    finally:
+        if output is not None:
+            output.close()
 
 
 # ==================== إدارة الديون ====================
