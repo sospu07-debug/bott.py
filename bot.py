@@ -56,8 +56,8 @@ def _keep_alive():
 TURSO_HTTP_URL = "https://botyanal-sospu07-debug.aws-ap-northeast-1.turso.io/v2/pipeline"
 
 
-TURSO_TOKEN = "eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9.eyJhIjoicnciLCJpYXQiOjE3OTA0NTY4MjAsImlkIjoiMDFhMGRmOGEtZGIwMS03NDQ4LWE2NzctZjU5YmZjMGFjM2NiIiwia2lkIjoidWlBSkk2aWNYTFozeThmN0R3ck5RN0doNkVOeWM5dDQyNTVkTGxkMVJBOCIsInJpZCI6IjIxNjg3ZGJjLTI1NzItNDM2Mi1iZTg3LTU0MDBlMmFlY2JlOCJ9.aMUqH4ywPwFKHcQK_PBkyrBXynDK6RXEIUSg3CSS_0r85b0xPlhs-eEC5ZyplSJzIDS7SCJmMd_zgbVxA3ZzCQ"
-TELEGRAM_TOKEN = "8784722345:AAFY7gkzM1Zzsrjlb6zzu5ed5GM-k0QOCUs"
+TURSO_TOKEN = os.environ.get("TURSO_TOKEN", "")
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "")
 RATE = 0.75
 AMMAN_TZ = timezone(timedelta(hours=3))
 
@@ -535,46 +535,64 @@ async def show_financial_stats(query, user_id, kind="monthly"):
     prev_start, prev_end = _previous_dates(kind, start)
     current = get_financial_stats(user_id, start, end)
     previous = get_financial_stats(user_id, prev_start, prev_end)
+
     msg = _stats_text(current, labels[kind])
     msg += "\n\nمقارنة بالفترة السابقة:\n"
     for key, label in (("income_jod", "دخل JOD"), ("expense_jod", "مصروفات JOD"),
                        ("income_usd", "دخل USD"), ("expense_usd", "مصروفات USD")):
         msg += "{}: {:+.2f}\n".format(label, current[key] - previous[key])
+
     kb = [
         [InlineKeyboardButton("يومي", callback_data="stats_daily"), InlineKeyboardButton("أسبوعي", callback_data="stats_weekly")],
         [InlineKeyboardButton("شهري", callback_data="stats_monthly"), InlineKeyboardButton("سنوي", callback_data="stats_yearly")],
         [InlineKeyboardButton("رجوع", callback_data="menu_money")]
     ]
-    await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(kb))
-    # صورة رسم بياني اختيارية؛ يبقى العرض النصي متاحًا إذا لم تكن matplotlib مثبتة.
-    if plt is not None and current["days"]:
+    markup = InlineKeyboardMarkup(kb)
+
+    if plt is None or not current["days"]:
+        await query.edit_message_text(msg + "\n\nلا تتوفر بيانات كافية للرسم البياني أو مكتبة الرسم غير مثبتة.",
+                                      reply_markup=markup)
+        return
+
+    image_buffer = None
+    try:
+        dates = sorted(current["days"])
+        income_jod = [current["days"][d]["income_jod"] for d in dates]
+        expense_jod = [current["days"][d]["expense_jod"] for d in dates]
+        income_usd = [current["days"][d]["income_usd"] for d in dates]
+        expense_usd = [current["days"][d]["expense_usd"] for d in dates]
+
+        fig, ax = plt.subplots(figsize=(10, 5))
+        positions = list(range(len(dates)))
+        width = 0.20
+        ax.bar([x - 1.5 * width for x in positions], income_jod, width, label="Income JOD")
+        ax.bar([x - 0.5 * width for x in positions], expense_jod, width, label="Expenses JOD")
+        ax.bar([x + 0.5 * width for x in positions], income_usd, width, label="Income USD")
+        ax.bar([x + 1.5 * width for x in positions], expense_usd, width, label="Expenses USD")
+        ax.set_xticks(positions)
+        ax.set_xticklabels([d[5:] for d in dates], rotation=45, ha="right")
+        ax.set_title("Financial statistics - " + labels[kind])
+        ax.set_ylabel("Amounts (currencies separated)")
+        ax.legend()
+        ax.grid(axis="y", alpha=0.25)
+        fig.tight_layout()
+        image_buffer = BytesIO()
+        fig.savefig(image_buffer, format="png", dpi=140)
+        plt.close(fig)
+        image_buffer.seek(0)
+
+        caption = msg[:1000]
+        await query.message.reply_photo(photo=image_buffer, caption=caption, reply_markup=markup)
         try:
-            dates = sorted(current["days"])
-            income_jod = [current["days"][d]["income_jod"] for d in dates]
-            expense_jod = [current["days"][d]["expense_jod"] for d in dates]
-            income_usd = [current["days"][d]["income_usd"] for d in dates]
-            expense_usd = [current["days"][d]["expense_usd"] for d in dates]
-            fig, ax = plt.subplots(figsize=(10, 4))
-            positions = list(range(len(dates)))
-            width = 0.38
-            ax.bar([x - 1.5 * width for x in positions], income_jod, width, label="Income JOD")
-            ax.bar([x - 0.5 * width for x in positions], expense_jod, width, label="Expenses JOD")
-            ax.bar([x + 0.5 * width for x in positions], income_usd, width, label="Income USD")
-            ax.bar([x + 1.5 * width for x in positions], expense_usd, width, label="Expenses USD")
-            ax.set_xticks(positions)
-            ax.set_xticklabels([d[5:] for d in dates], rotation=45, ha="right")
-            ax.set_title("Daily income and expenses")
-            ax.set_ylabel("Amount (JOD and USD shown separately)")
-            ax.legend()
-            ax.grid(axis="y", alpha=0.25)
-            fig.tight_layout()
-            image_buffer = BytesIO()
-            fig.savefig(image_buffer, format="png", dpi=140)
-            plt.close(fig)
-            image_buffer.seek(0)
-            await query.message.reply_photo(photo=image_buffer, caption="الرسم البياني للفترة المختارة")
-        except Exception as chart_error:
-            print("statistics chart error:", repr(chart_error), flush=True)
+            await query.delete_message()
+        except Exception:
+            pass
+    except Exception as chart_error:
+        print("statistics chart error:", repr(chart_error), flush=True)
+        await query.edit_message_text(msg, reply_markup=markup)
+    finally:
+        if image_buffer is not None:
+            image_buffer.close()
 
 
 # ==================== إدارة الديون ====================
@@ -663,7 +681,7 @@ async def show_debts_menu(query, user_id):
     for row in get_debts(user_id):
         target = owed if row[1] == "owed_to_me" else owe
         target[row[4]] += max(0.0, float(row[3]) - float(row[7]))
-    msg = ("إدارة الديون 💰\n-------------------\nلي عند الآخرين: {:.2f} JOD | {:.2f} USD\n"
+    msg = ("إدارة الديون \n-------------------\nلي عند الآخرين: {:.2f} JOD | {:.2f} USD\n"
            "عليّ للآخرين: {:.2f} JOD | {:.2f} USD").format(
                owed["JOD"], owed["USD"], owe["JOD"], owe["USD"])
     kb = [[InlineKeyboardButton("إضافة دين", callback_data="debt_add")],
@@ -1350,8 +1368,8 @@ async def send_csv(update, context, date_filter, filename):
 def main_keyboard():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("فلوس", callback_data="menu_money")],
-        [InlineKeyboardButton("الإحصائيات 📊", callback_data="stats_menu")],
-        [InlineKeyboardButton("الديون 💰", callback_data="debts_menu")],
+        [InlineKeyboardButton("الإحصائيات ", callback_data="stats_menu")],
+        [InlineKeyboardButton("الديون ", callback_data="debts_menu")],
         [InlineKeyboardButton("ملاحظات", callback_data="menu_notes")],
         [InlineKeyboardButton("صلاة", callback_data="menu_prayer")],
         [InlineKeyboardButton("عاداتي", callback_data="menu_habits")],
@@ -1380,8 +1398,8 @@ async def money_menu(update, context):
             InlineKeyboardButton("دولار", callback_data="cat_dollar"),
         ],
         [InlineKeyboardButton("سجل", callback_data="log_months")],
-        [InlineKeyboardButton("الإحصائيات 📊", callback_data="stats_menu")],
-        [InlineKeyboardButton("إدارة الديون 💰", callback_data="debts_menu")],
+        [InlineKeyboardButton("الإحصائيات ", callback_data="stats_menu")],
+        [InlineKeyboardButton("إدارة الديون ", callback_data="debts_menu")],
         [InlineKeyboardButton("رجوع", callback_data="back_main")],
     ]
 
@@ -1428,7 +1446,7 @@ async def prayer_menu(update, context):
     buttons = []
 
     for p in PRAYERS:
-        mark = " ✓" if p in done else ""
+        mark = " " if p in done else ""
 
         buttons.append([
             InlineKeyboardButton(
@@ -2440,12 +2458,12 @@ def amount_keypad_markup(value):
             InlineKeyboardButton(".", callback_data="amount_key_dot"),
         ],
         [
-            InlineKeyboardButton("تأكيد المبلغ ✓", callback_data="amount_key_done"),
+            InlineKeyboardButton("تأكيد المبلغ ", callback_data="amount_key_done"),
             InlineKeyboardButton("إلغاء", callback_data="menu_money"),
         ],
     ]
     shown = value if value else "0"
-    return "اكتب المبلغ باستخدام لوحة الأرقام:\n\n💰 المبلغ: " + shown, InlineKeyboardMarkup(rows)
+    return "اكتب المبلغ باستخدام لوحة الأرقام:\n\n المبلغ: " + shown, InlineKeyboardMarkup(rows)
 
 
 async def show_amount_keypad(query, context):
