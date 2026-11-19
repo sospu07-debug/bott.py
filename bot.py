@@ -683,7 +683,7 @@ async def show_financial_stats(query, user_id, kind="monthly"):
     kb = [
         [InlineKeyboardButton("يومي", callback_data="stats_daily"), InlineKeyboardButton("أسبوعي", callback_data="stats_weekly")],
         [InlineKeyboardButton("شهري", callback_data="stats_monthly"), InlineKeyboardButton("سنوي", callback_data="stats_yearly")],
-        [InlineKeyboardButton("التقرير الكامل", callback_data="stats_full_report")],
+        [InlineKeyboardButton("صورة رسم بياني", callback_data="stats_full_report")],
         [InlineKeyboardButton("رجوع", callback_data="menu_money")]
     ]
     markup = InlineKeyboardMarkup(kb)
@@ -1522,6 +1522,7 @@ def main_keyboard():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("فلوس", callback_data="menu_money")],
         [InlineKeyboardButton("الإحصائيات ", callback_data="stats_menu")],
+        [InlineKeyboardButton("صورة رسم بياني", callback_data="stats_full_report")],
         [InlineKeyboardButton("الديون ", callback_data="debts_menu")],
         [InlineKeyboardButton("ملاحظات", callback_data="menu_notes")],
         [InlineKeyboardButton("صلاة", callback_data="menu_prayer")],
