@@ -620,10 +620,20 @@ def build_full_report_chart(user_id):
         weights = [float(row[0]) for row in body_sorted if row[0] is not None]
         weight_dates = [dates[i] for i, row in enumerate(body_sorted) if row[0] is not None]
         if weights:
-            ax.plot(weight_dates, weights, marker="o", label="Weight")
+            ax.plot(weight_dates, weights, marker="o", label="Weight (kg)")
+            heights = [float(row[1]) for row in body_sorted if row[1] is not None]
+            height_dates = [str(row[2]) for row in body_sorted if row[1] is not None]
+            if heights:
+                height_axis = ax.twinx()
+                height_axis.plot(height_dates, heights, marker="s", linestyle="--", label="Height (cm)")
+                height_axis.set_ylabel("Height (cm)")
+                lines1, labels1 = ax.get_legend_handles_labels()
+                lines2, labels2 = height_axis.get_legend_handles_labels()
+                ax.legend(lines1 + lines2, labels1 + labels2, fontsize=8)
+            else:
+                ax.legend()
             ax.tick_params(axis="x", labelrotation=35, labelsize=7)
-            ax.legend()
-        ax.set_title("Weight history")
+        ax.set_title("Weight and height history")
     else:
         ax.text(0.5, 0.5, "No body records", ha="center", va="center")
         ax.set_title("Weight history")
