@@ -172,8 +172,10 @@ def db_execute(sql, params=None):
         ]
     }
 
+    # Turso Hrana HTTP protocol requires the /v2/pipeline endpoint.
+    pipeline_url = TURSO_HTTP_URL.rstrip("/") + "/v2/pipeline"
     r = http_requests.post(
-        TURSO_HTTP_URL,
+        pipeline_url,
         json=payload,
         headers=headers,
         timeout=30
