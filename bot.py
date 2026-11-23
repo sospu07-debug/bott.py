@@ -582,136 +582,61 @@ def build_full_report_chart(user_id):
     if plt is None:
         return None
 
+    # اجمع العمليات شهرياً إلى أربع سلاسل مستقلة:
+    # صرف دولار، ربح دولار، صرف دينار، ربح دينار.
     tx = db_execute(
-        "SELECT category, amount, timestamp FROM transactions WHERE user_id=? ORDER BY timestamp",
+        "SELECT category, amount, timestamp FROM transactions "
+        "WHERE user_id=? ORDER BY timestamp",
         [int(user_id)]
     )
-    debts = get_debts(user_id)
-    body = db_execute(
-        "SELECT weight, height, date FROM body_log WHERE user_id=? ORDER BY date",
-        [int(user_id)]
-    )
-    prayers = db_execute("SELECT COUNT(*) FROM prayers WHERE user_id=?", [int(user_id)])
-    habits = db_execute("SELECT COUNT(*) FROM habits WHERE user_id=?", [int(user_id)])
-    notes = db_execute("SELECT COUNT(*) FROM notes WHERE user_id=?", [int(user_id)])
 
     monthly = {}
-    totals = {
-        "income_jod": 0.0, "expense_jod": 0.0,
-        "income_usd": 0.0, "expense_usd": 0.0,
-        "cash": 0.0, "bank": 0.0, "dollar": 0.0
-    }
     for category, amount, stamp in tx:
-        amount = float(amount or 0)
-        currency = "usd" if category == "dollar" else "jod"
         month = str(stamp)[:7]
+        amount = float(amount or 0)
         bucket = monthly.setdefault(month, {
-            "income_jod": 0.0, "expense_jod": 0.0,
-            "income_usd": 0.0, "expense_usd": 0.0
+            "expense_usd": 0.0,
+            "income_usd": 0.0,
+            "expense_jod": 0.0,
+            "income_jod": 0.0
         })
-        if amount >= 0:
-            totals["income_" + currency] += amount
-            bucket["income_" + currency] += amount
-        else:
-            totals["expense_" + currency] += abs(amount)
+
+        currency = "usd" if category == "dollar" else "jod"
+        if amount < 0:
             bucket["expense_" + currency] += abs(amount)
-        if category in ("cash", "bank", "dollar"):
-            totals[category] += amount
+        elif amount > 0:
+            bucket["income_" + currency] += amount
 
-    debt_totals = {
-        "owed_to_me": {"JOD": 0.0, "USD": 0.0},
-        "i_owe": {"JOD": 0.0, "USD": 0.0}
-    }
-    for d in debts:
-        remaining = max(0.0, float(d[3]) - float(d[7]))
-        if d[1] in debt_totals and d[4] in ("JOD", "USD"):
-            debt_totals[d[1]][d[4]] += remaining
-
-    fig, axes = plt.subplots(2, 2, figsize=(13, 9))
-    ax = axes[0][0]
     months = sorted(monthly)[-12:]
+    fig, ax = plt.subplots(figsize=(12, 6))
+
     if months:
-        x = list(range(len(months)))
-        w = 0.19
         series = [
-            ("income_jod", "Income JOD", -1.5*w),
-            ("expense_jod", "Expenses JOD", -0.5*w),
-            ("income_usd", "Income USD", 0.5*w),
-            ("expense_usd", "Expenses USD", 1.5*w)
+            ("expense_usd", "صرف دولار"),
+            ("income_usd", "ربح دولار"),
+            ("expense_jod", "صرف دينار"),
+            ("income_jod", "ربح دينار")
         ]
-        for key, label, offset in series:
-            ax.bar([v + offset for v in x], [monthly[m][key] for m in months], w, label=label)
+        x = list(range(len(months)))
+        for key, label in series:
+            values = [monthly[m][key] for m in months]
+            ax.plot(x, values, marker="o", linewidth=2, markersize=5, label=label)
+
         ax.set_xticks(x)
-        ax.set_xticklabels(months, rotation=40, ha="right")
-        ax.set_title("Income and expenses by month")
-        ax.legend(fontsize=7)
+        ax.set_xticklabels(months, rotation=35, ha="right")
+        ax.set_ylabel("المبلغ")
+        ax.set_xlabel("الشهر")
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+        ax.set_title("الرسم البياني للدخل والمصروفات")
     else:
-        ax.text(0.5, 0.5, "No financial transactions", ha="center", va="center")
-        ax.set_title("Financial history")
-    ax.grid(axis="y", alpha=0.2)
+        ax.text(0.5, 0.5, "لا توجد عمليات مالية مسجلة",
+                ha="center", va="center", transform=ax.transAxes)
+        ax.set_title("الرسم البياني للدخل والمصروفات")
 
-    ax = axes[0][1]
-    labels = ["Receivable JOD", "Payable JOD", "Receivable USD", "Payable USD"]
-    values = [
-        debt_totals["owed_to_me"]["JOD"], debt_totals["i_owe"]["JOD"],
-        debt_totals["owed_to_me"]["USD"], debt_totals["i_owe"]["USD"]
-    ]
-    ax.bar(labels, values)
-    ax.set_title("Outstanding debts (currencies separate)")
-    ax.tick_params(axis="x", labelrotation=25, labelsize=8)
-    ax.grid(axis="y", alpha=0.2)
-
-    ax = axes[1][0]
-    body_sorted = sorted(body, key=lambda row: str(row[2]))
-    if body_sorted:
-        dates = [str(row[2]) for row in body_sorted]
-        weights = [float(row[0]) for row in body_sorted if row[0] is not None]
-        weight_dates = [dates[i] for i, row in enumerate(body_sorted) if row[0] is not None]
-        if weights:
-            ax.plot(weight_dates, weights, marker="o", label="Weight (kg)")
-            heights = [float(row[1]) for row in body_sorted if row[1] is not None]
-            height_dates = [str(row[2]) for row in body_sorted if row[1] is not None]
-            if heights:
-                height_axis = ax.twinx()
-                height_axis.plot(height_dates, heights, marker="s", linestyle="--", label="Height (cm)")
-                height_axis.set_ylabel("Height (cm)")
-                lines1, labels1 = ax.get_legend_handles_labels()
-                lines2, labels2 = height_axis.get_legend_handles_labels()
-                ax.legend(lines1 + lines2, labels1 + labels2, fontsize=8)
-            else:
-                ax.legend()
-            ax.tick_params(axis="x", labelrotation=35, labelsize=7)
-        ax.set_title("Weight and height history")
-    else:
-        ax.text(0.5, 0.5, "No body records", ha="center", va="center")
-        ax.set_title("Weight history")
-    ax.grid(alpha=0.2)
-
-    ax = axes[1][1]
-    counts = [
-        ("Transactions", len(tx)),
-        ("Debts", len(debts)),
-        ("Body logs", len(body)),
-        ("Prayer records", int(prayers[0][0] or 0) if prayers else 0),
-        ("Habits", int(habits[0][0] or 0) if habits else 0),
-        ("Notes", int(notes[0][0] or 0) if notes else 0)
-    ]
-    ax.bar([x[0] for x in counts], [x[1] for x in counts])
-    ax.set_title("All saved records")
-    ax.tick_params(axis="x", labelrotation=25, labelsize=8)
-    ax.grid(axis="y", alpha=0.2)
-
-    fig.suptitle(
-        "Complete personal report | Cash {:.2f} | Bank {:.2f} | USD {:.2f}\n"
-        "JOD net {:.2f} | USD net {:.2f}".format(
-            totals["cash"], totals["bank"], totals["dollar"],
-            totals["income_jod"] - totals["expense_jod"],
-            totals["income_usd"] - totals["expense_usd"]),
-        fontsize=12
-    )
-    fig.tight_layout(rect=[0, 0, 1, 0.93])
+    fig.tight_layout()
     output = BytesIO()
-    fig.savefig(output, format="png", dpi=150)
+    fig.savefig(output, format="png", dpi=160)
     plt.close(fig)
     output.seek(0)
     return output
