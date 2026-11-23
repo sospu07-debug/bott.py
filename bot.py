@@ -208,45 +208,13 @@ def db_execute(sql, params=None):
 
 
 def db_execute_many(statements):
-    headers = {
-        "Authorization": "Bearer " + TURSO_TOKEN,
-        "Content-Type": "application/json",
-    }
-
-    reqs = []
-
+    # نفّذ كل أمر بشكل منفصل عبر db_execute.
+    # endpoint الخاص بـ Turso يرفض صيغة الدفعة السابقة التي لا تحتوي statements.
+    results = []
     for sql, params in statements:
-        if params:
-            reqs.append({
-                "type": "execute",
-                "stmt": {
-                    "sql": sql,
-                    "args": _build_args(params)
-                }
-            })
-        else:
-            reqs.append({
-                "type": "execute",
-                "stmt": {"sql": sql}
-            })
+        results.append(db_execute(sql, params))
+    return results
 
-    reqs.append({"type": "close"})
-
-    r = http_requests.post(
-        TURSO_HTTP_URL,
-        json={"requests": reqs},
-        headers=headers,
-        timeout=30
-    )
-
-    if r.status_code != 200:
-        raise Exception(
-            "Turso HTTP {}: {}".format(
-                r.status_code, r.text[:200]
-            )
-        )
-
-    return r.json()
 
 
 def init_db():
