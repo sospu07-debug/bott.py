@@ -685,7 +685,7 @@ async def send_full_report(update, context):
         output.seek(0)
         await query.message.reply_photo(
             photo=output,
-            caption="التقرير الكامل لجميع السجلات المحفوظة: المعاملات، الأرصدة، الديون، الوزن، الصلاة، العادات والملاحظات."
+            caption="الرسم البياني للحركة المالية فقط: الإضافات (الربح) والخصومات، بالدينار والدولار."
         )
     except Exception as e:
         traceback.print_exc()
@@ -1475,7 +1475,6 @@ def main_keyboard():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("فلوس", callback_data="menu_money")],
         [InlineKeyboardButton("الإحصائيات ", callback_data="stats_menu")],
-        [InlineKeyboardButton("صورة رسم بياني", callback_data="stats_full_report")],
         [InlineKeyboardButton("الديون ", callback_data="debts_menu")],
         [InlineKeyboardButton("ملاحظات", callback_data="menu_notes")],
         [InlineKeyboardButton("صلاة", callback_data="menu_prayer")],
@@ -1506,6 +1505,7 @@ async def money_menu(update, context):
         ],
         [InlineKeyboardButton("سجل", callback_data="log_months")],
         [InlineKeyboardButton("الإحصائيات ", callback_data="stats_menu")],
+        [InlineKeyboardButton("رسم بياني للفلوس", callback_data="stats_full_report")],
         [InlineKeyboardButton("إدارة الديون ", callback_data="debts_menu")],
         [InlineKeyboardButton("رجوع", callback_data="back_main")],
     ]
