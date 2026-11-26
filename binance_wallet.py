@@ -26,7 +26,9 @@ SECRET=os.getenv("BINANCE_API_SECRET") or _FILE_KEYS.get("BINANCE_API_SECRET",""
 BASE=(os.getenv("BINANCE_API_BASE") or _FILE_KEYS.get("BINANCE_API_BASE") or "https://api.binance.com").rstrip("/")
 _allowed=os.getenv("BINANCE_ALLOWED_USER_IDS") or _FILE_KEYS.get("BINANCE_ALLOWED_USER_IDS","")
 ALLOWED={int(x.strip()) for x in _allowed.split(",") if x.strip()}
-INTERVAL=max(60,int(os.getenv("BINANCE_SYNC_SECONDS","300")))
+INTERVAL=max(5,int(os.getenv("BINANCE_SYNC_SECONDS","5")))
+FLOW_INTERVAL=max(30,int(os.getenv("BINANCE_FLOW_SYNC_SECONDS","30")))
+BALANCE_CHANGES=[]
 S=requests.Session()
 if KEY:S.headers.update({"X-MBX-APIKEY":KEY})
 PRICES={}
@@ -52,15 +54,32 @@ def api(method,path,params=None,base=None,signed=True):
  if signed:
   p["timestamp"]=int(time.time()*1000);p.setdefault("recvWindow",10000)
   q=urlencode(p,doseq=True);p["signature"]=hmac.new(SECRET.encode(),q.encode(),hashlib.sha256).hexdigest()
- for n in range(4):
-  try:
-   r=S.request(method,(base or BASE)+path,params=p if method=="GET" else None,data=p if method!="GET" else None,timeout=25)
-   if r.status_code in (418,429):time.sleep(min(60,2**(n+2)));continue
-   r.raise_for_status();return r.json()
-  except requests.RequestException:
-   if n==3:raise
-   time.sleep(2**n)
- raise RuntimeError("Binance API rate limit")
+ root=(base or BASE).rstrip("/")
+ if root=="https://api.binance.com":
+  hosts=[root,"https://api-gcp.binance.com","https://api1.binance.com","https://api2.binance.com","https://api3.binance.com","https://api4.binance.com"]
+ elif root=="https://fapi.binance.com":
+  hosts=[root,"https://fapi1.binance.com"]
+ elif root=="https://dapi.binance.com":
+  hosts=[root,"https://dapi1.binance.com"]
+ else:hosts=[root]
+ last=None
+ for host in hosts:
+  for attempt in range(2):
+   try:
+    r=S.request(method,host+path,params=p if method=="GET" else None,data=p if method!="GET" else None,timeout=12)
+    if r.status_code in (418,429):
+     last=requests.HTTPError(f"Binance rate limit {r.status_code}: {r.text[:200]}",response=r)
+     time.sleep(min(10,2**(attempt+1)));continue
+    if r.status_code in (403,451):
+     last=requests.HTTPError(f"Binance HTTP {r.status_code} at {host}: {r.text[:200]}",response=r)
+     break
+    r.raise_for_status();return r.json()
+   except requests.RequestException as e:
+    last=e
+    if getattr(getattr(e,"response",None),"status_code",None) in (403,451):break
+    if attempt==0:time.sleep(1)
+ if last:raise last
+ raise RuntimeError("تعذر الاتصال بعناوين Binance البديلة")
 
 def usd(asset,qty):
  q=float(qty)
@@ -80,7 +99,14 @@ def save(wallet,items,ts):
  return out
 
 def sync_balances():
- global PRICES
+ global PRICES,BALANCE_CHANGES
+ # Keep the last successful snapshot so alerts reflect amount changes, not price movement.
+ with conn() as c:
+  prev_ts=c.execute("SELECT MAX(ts) FROM bw_snapshots").fetchone()[0]
+  previous={}
+  if prev_ts:
+   for x in c.execute("SELECT wallet,asset,amount FROM bw_snapshots WHERE ts=?",(prev_ts,)).fetchall():
+    previous[(x["wallet"],x["asset"])]=float(x["amount"])
  PRICES={x["symbol"]:float(x["price"]) for x in api("GET","/api/v3/ticker/price",signed=False)}
  ts=int(time.time());out={}
  out["Spot"]=save("Spot",api("GET","/api/v3/account").get("balances",[]),ts)
@@ -91,7 +117,21 @@ def sync_balances():
  for name,host,path in (("USD-M Futures","https://fapi.binance.com","/fapi/v3/balance"),("COIN-M Futures","https://dapi.binance.com","/dapi/v1/balance")):
   try:out[name]=save(name,api("GET",path,{},host),ts)
   except Exception as e:log.warning("%s unavailable: %s",name,e);out[name]=[]
- with conn() as c:c.execute("INSERT OR REPLACE INTO bw_state VALUES('last_sync',?)",(str(ts),))
+ current={}
+ for wallet,items in out.items():
+  for asset,amount,value in items:current[(wallet,asset)]=amount
+ with conn() as c:
+  initialized=c.execute("SELECT value FROM bw_state WHERE name='balance_initialized'").fetchone()
+  if initialized:
+   changes=[]
+   for key in set(previous)|set(current):
+    before=previous.get(key,0.0);after=current.get(key,0.0);delta=after-before
+    if abs(delta)>1e-12:changes.append((key[0],key[1],before,after,delta))
+   BALANCE_CHANGES=changes
+  else:
+   BALANCE_CHANGES=[]
+   c.execute("INSERT OR REPLACE INTO bw_state VALUES('balance_initialized','1')")
+  c.execute("INSERT OR REPLACE INTO bw_state VALUES('last_sync',?)",(str(ts),))
  return out
 
 def put_event(key,kind,x,source,ts):
@@ -210,16 +250,30 @@ async def callback(update,context):
  await q.edit_message_text(text[:4000],reply_markup=menu())
 
 async def background(app):
+ last_flow=0
  while True:
   try:
    if KEY and SECRET:
-    await asyncio.to_thread(sync_balances);events=await asyncio.to_thread(sync_flows);await asyncio.to_thread(sync_income)
-    for ek,kind,x in events:
-     with conn() as c:sent=c.execute("SELECT 1 FROM bw_notified WHERE event_key=?",(ek,)).fetchone()
-     if not sent:
-      for uid in ALLOWED:
-       await app.bot.send_message(uid,f"🔔 Binance {kind}: {x.get('coin',x.get('asset',''))} {x.get('amount','')} · {x.get('status','')}")
-      with conn() as c:c.execute("INSERT OR IGNORE INTO bw_notified VALUES(?,?)",(ek,int(time.time())))
+    await asyncio.to_thread(sync_balances)
+    for wallet,asset,before,after,delta in BALANCE_CHANGES:
+     direction="زيادة" if delta>0 else "نقصان"
+     msg=(f"🔔 تغير رصيد Binance\\nالمحفظة: {wallet}\\nالعملة: {asset}\\n"
+          f"التغيير: {direction} {abs(delta):.10g} {asset}\\n"
+          f"السابق: {before:.10g}\\nالحالي: {after:.10g}")
+     for uid in ALLOWED:
+      try:await app.bot.send_message(uid,msg)
+      except Exception:log.exception("balance notification")
+    now=time.time()
+    if now-last_flow>=FLOW_INTERVAL:
+     events=await asyncio.to_thread(sync_flows);await asyncio.to_thread(sync_income);last_flow=now
+     for ek,kind,x in events:
+      with conn() as c:sent=c.execute("SELECT 1 FROM bw_notified WHERE event_key=?",(ek,)).fetchone()
+      if not sent:
+       msg=f"🔔 Binance {kind}\\n{x.get('coin',x.get('asset',''))} {x.get('amount','')}\\nالحالة: {x.get('status','غير محدد')}\\n{local(x.get('insertTime',x.get('applyTime',x.get('timestamp',0))))}"
+       for uid in ALLOWED:
+        try:await app.bot.send_message(uid,msg)
+        except Exception:log.exception("Telegram notify")
+       with conn() as c:c.execute("INSERT OR IGNORE INTO bw_notified VALUES(?,?)",(ek,int(time.time())))
   except Exception:log.exception("background Binance sync")
   await asyncio.sleep(INTERVAL)
 
