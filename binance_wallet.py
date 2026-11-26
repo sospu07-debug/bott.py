@@ -55,7 +55,7 @@ def save(wallet,items,ts):
  for x in items or []:
   a=x.get("asset") or x.get("coin")
   if not a:continue
-  q=sum(float(x.get(k,0) or 0) for k in ("free","locked","freeze","balance"))
+  q=sum(float(x.get(k,0) or 0) for k in ("free","locked","freeze","balance","totalAmount","amount"))
   if not q:continue
   v=usd(a,q)
   with conn() as c:c.execute("INSERT OR REPLACE INTO bw_snapshots VALUES(?,?,?,?,?)",(ts,wallet,a,str(q),v))
