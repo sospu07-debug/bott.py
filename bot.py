@@ -678,33 +678,140 @@ async def show_financial_stats(query, user_id, kind="monthly"):
 
 
 async def send_full_report(update, context):
-    query = update.callback_query
+    await show_money_chart_menu(update.callback_query)
+
+
+def _chart_transactions(user_id):
+    return db_execute(
+        "SELECT category, amount, timestamp FROM transactions WHERE user_id=? ORDER BY timestamp",
+        [int(user_id)]
+    )
+
+
+def _chart_dates(user_id):
+    dates = []
+    for _category, _amount, stamp in _chart_transactions(user_id):
+        value = str(stamp or "")[:10]
+        try:
+            datetime.strptime(value, "%Y-%m-%d")
+            dates.append(value)
+        except Exception:
+            continue
+    return sorted(set(dates))
+
+
+def _chart_year_keyboard(user_id, prefix, back="moneychart_menu"):
+    years = sorted(set(d[:4] for d in _chart_dates(user_id)), reverse=True)
+    rows = [[InlineKeyboardButton(y, callback_data=prefix + y)] for y in years]
+    rows.append([InlineKeyboardButton("رجوع", callback_data=back)])
+    return InlineKeyboardMarkup(rows)
+
+
+def _chart_month_keyboard(user_id, year, prefix, back):
+    available = sorted(set(d[5:7] for d in _chart_dates(user_id) if d.startswith(year)))
+    names = {"01":"يناير","02":"فبراير","03":"مارس","04":"أبريل","05":"مايو","06":"يونيو",
+             "07":"يوليو","08":"أغسطس","09":"سبتمبر","10":"أكتوبر","11":"نوفمبر","12":"ديسمبر"}
+    rows = []
+    for i in range(0, len(available), 3):
+        rows.append([InlineKeyboardButton(names.get(m, m), callback_data=prefix + year + "-" + m)
+                     for m in available[i:i+3]])
+    rows.append([InlineKeyboardButton("رجوع", callback_data=back)])
+    return InlineKeyboardMarkup(rows)
+
+
+def _chart_day_keyboard(user_id, year_month, prefix, back):
+    available = sorted(set(d[8:10] for d in _chart_dates(user_id) if d.startswith(year_month)))
+    rows = []
+    for i in range(0, len(available), 5):
+        rows.append([InlineKeyboardButton(day, callback_data=prefix + year_month + "-" + day)
+                     for day in available[i:i+5]])
+    rows.append([InlineKeyboardButton("رجوع", callback_data=back)])
+    return InlineKeyboardMarkup(rows)
+
+
+def _make_money_chart(user_id, start_date, end_date, grouping):
+    if plt is None:
+        return None
+    tx = _chart_transactions(user_id)
+    buckets = {}
+    for category, amount, stamp in tx:
+        stamp_text = str(stamp or "")
+        date_text = stamp_text[:10]
+        try:
+            date_obj = datetime.strptime(date_text, "%Y-%m-%d")
+        except Exception:
+            continue
+        if not (start_date <= date_text <= end_date):
+            continue
+        key = date_obj.strftime("%Y-%m") if grouping == "month" else date_text
+        bucket = buckets.setdefault(key, {"income_jod":0.0,"expense_jod":0.0,
+                                          "income_usd":0.0,"expense_usd":0.0})
+        currency = "usd" if category == "dollar" else "jod"
+        value = float(amount or 0)
+        if value > 0:
+            bucket["income_" + currency] += value
+        elif value < 0:
+            bucket["expense_" + currency] += abs(value)
+
+    labels = sorted(buckets)
+    fig, axes = plt.subplots(1, 2, figsize=(14, 6))
+    fig.suptitle("الحركة المالية من {} إلى {}".format(start_date, end_date),
+                 fontsize=15, fontweight="bold")
+    panels = [(axes[0], "jod", "الدينار الأردني (JOD)"),
+              (axes[1], "usd", "الدولار الأمريكي (USD)")]
+    for ax, currency, title in panels:
+        income = [buckets[k]["income_" + currency] for k in labels]
+        expense = [buckets[k]["expense_" + currency] for k in labels]
+        x = list(range(len(labels)))
+        width = 0.36
+        ax.bar([v-width/2 for v in x], income, width, label="الدخل / الربح", color="#2a9d8f")
+        ax.bar([v+width/2 for v in x], expense, width, label="الصرف / المصروف", color="#e76f51")
+        ax.set_title(title, fontweight="bold")
+        ax.set_xlabel("التاريخ" if grouping == "day" else "الشهر")
+        ax.set_ylabel("المبلغ")
+        ax.set_xticks(x)
+        ax.set_xticklabels(labels, rotation=40, ha="right")
+        ax.grid(axis="y", linestyle="--", alpha=0.25)
+        ax.legend(frameon=False)
+        ax.spines["top"].set_visible(False)
+        ax.spines["right"].set_visible(False)
+    if not labels:
+        for ax in axes:
+            ax.text(0.5, 0.5, "لا توجد عمليات في هذه الفترة", ha="center", va="center",
+                    transform=ax.transAxes)
+    fig.tight_layout(rect=[0, 0, 1, 0.92])
+    output = BytesIO()
+    fig.savefig(output, format="png", dpi=160, bbox_inches="tight")
+    plt.close(fig)
+    output.seek(0)
+    return output
+
+
+async def _send_selected_money_chart(query, user_id, start_date, end_date, grouping):
     output = None
     try:
-        # callback query is answered once in the main callback handler.
-        output = build_full_report_chart(update.effective_user.id)
+        output = _make_money_chart(user_id, start_date, end_date, grouping)
         if output is None:
-            await query.message.reply_text(
-                "مكتبة الرسم غير متاحة. تأكد من تثبيت matplotlib ثم أعد تشغيل الخدمة."
-            )
+            await query.message.reply_text("مكتبة الرسم غير متاحة. تأكد من تثبيت matplotlib.")
             return
-        output.seek(0)
         await query.message.reply_photo(
             photo=output,
-            caption="الرسم البياني للحركة المالية فقط: الإضافات (الربح) والخصومات، بالدينار والدولار."
+            caption="الرسم البياني للفترة: {} — {}".format(start_date, end_date)
         )
-    except Exception as e:
-        traceback.print_exc()
-        print("full report error:", repr(e), flush=True)
-        try:
-            await query.message.reply_text(
-                "تعذر إنشاء الصورة: " + str(e)[:700]
-            )
-        except Exception:
-            pass
     finally:
         if output is not None:
             output.close()
+
+
+async def show_money_chart_menu(query):
+    kb = [
+        [InlineKeyboardButton("حسب السنة", callback_data="moneychart_year")],
+        [InlineKeyboardButton("حسب الشهر", callback_data="moneychart_month")],
+        [InlineKeyboardButton("حسب اليوم", callback_data="moneychart_day")],
+        [InlineKeyboardButton("تحديد نطاق الرسم", callback_data="moneychart_range")],
+        [InlineKeyboardButton("رجوع", callback_data="menu_money")]
+    ]
+    await query.edit_message_text("اختر طريقة عرض الرسم البياني:", reply_markup=InlineKeyboardMarkup(kb))
 
 
 # ==================== إدارة الديون ====================
@@ -1957,6 +2064,85 @@ async def category_selected(update, context):
         await money_menu(update, context)
         return ConversationHandler.END
 
+
+    # خيارات الرسم البياني للفلوس
+    if data == "moneychart_menu":
+        await show_money_chart_menu(query)
+        return ConversationHandler.END
+    if data == "moneychart_year":
+        await query.edit_message_text("اختر السنة:", reply_markup=_chart_year_keyboard(update.effective_user.id, "moneychart_y_"))
+        return ConversationHandler.END
+    if data.startswith("moneychart_y_"):
+        year = data.replace("moneychart_y_", "")
+        await _send_selected_money_chart(query, update.effective_user.id, year + "-01-01", year + "-12-31", "month")
+        return ConversationHandler.END
+    if data == "moneychart_month":
+        await query.edit_message_text("اختر السنة:", reply_markup=_chart_year_keyboard(update.effective_user.id, "moneychart_m_y_"))
+        return ConversationHandler.END
+    if data.startswith("moneychart_m_y_"):
+        year = data.replace("moneychart_m_y_", "")
+        await query.edit_message_text("اختر الشهر:", reply_markup=_chart_month_keyboard(update.effective_user.id, year, "moneychart_m_", "moneychart_month"))
+        return ConversationHandler.END
+    if data.startswith("moneychart_m_"):
+        year_month = data.replace("moneychart_m_", "")
+        start = year_month + "-01"
+        last_day = calendar.monthrange(int(year_month[:4]), int(year_month[5:7]))[1]
+        await _send_selected_money_chart(query, update.effective_user.id, start, year_month + "-{:02d}".format(last_day), "day")
+        return ConversationHandler.END
+    if data == "moneychart_day":
+        await query.edit_message_text("اختر السنة:", reply_markup=_chart_year_keyboard(update.effective_user.id, "moneychart_d_y_"))
+        return ConversationHandler.END
+    if data.startswith("moneychart_d_y_"):
+        year = data.replace("moneychart_d_y_", "")
+        await query.edit_message_text("اختر الشهر:", reply_markup=_chart_month_keyboard(update.effective_user.id, year, "moneychart_d_m_", "moneychart_day"))
+        return ConversationHandler.END
+    if data.startswith("moneychart_d_m_"):
+        year_month = data.replace("moneychart_d_m_", "")
+        await query.edit_message_text("اختر اليوم:", reply_markup=_chart_day_keyboard(update.effective_user.id, year_month, "moneychart_d_", "moneychart_day"))
+        return ConversationHandler.END
+    if data.startswith("moneychart_d_"):
+        selected = data.replace("moneychart_d_", "")
+        await _send_selected_money_chart(query, update.effective_user.id, selected, selected, "day")
+        return ConversationHandler.END
+    if data == "moneychart_range":
+        context.user_data["moneychart_range_stage"] = "start_year"
+        await query.edit_message_text("حدد سنة البداية:", reply_markup=_chart_year_keyboard(update.effective_user.id, "moneychart_rs_y_", "moneychart_menu"))
+        return ConversationHandler.END
+    if data.startswith("moneychart_rs_y_"):
+        year = data.replace("moneychart_rs_y_", "")
+        context.user_data["moneychart_range_year"] = year
+        context.user_data["moneychart_range_stage"] = "start_month"
+        await query.edit_message_text("حدد شهر البداية:", reply_markup=_chart_month_keyboard(update.effective_user.id, year, "moneychart_rs_m_", "moneychart_range"))
+        return ConversationHandler.END
+    if data.startswith("moneychart_rs_m_"):
+        year_month = data.replace("moneychart_rs_m_", "")
+        context.user_data["moneychart_range_start_month"] = year_month
+        await query.edit_message_text("حدد يوم البداية:", reply_markup=_chart_day_keyboard(update.effective_user.id, year_month, "moneychart_rs_d_", "moneychart_range"))
+        return ConversationHandler.END
+    if data.startswith("moneychart_rs_d_"):
+        context.user_data["moneychart_range_start"] = data.replace("moneychart_rs_d_", "")
+        await query.edit_message_text("تم تحديد البداية: {}\nالآن حدد سنة النهاية:".format(context.user_data["moneychart_range_start"]),
+            reply_markup=_chart_year_keyboard(update.effective_user.id, "moneychart_re_y_", "moneychart_range"))
+        return ConversationHandler.END
+    if data.startswith("moneychart_re_y_"):
+        year = data.replace("moneychart_re_y_", "")
+        context.user_data["moneychart_range_end_year"] = year
+        await query.edit_message_text("حدد شهر النهاية:", reply_markup=_chart_month_keyboard(update.effective_user.id, year, "moneychart_re_m_", "moneychart_range"))
+        return ConversationHandler.END
+    if data.startswith("moneychart_re_m_"):
+        year_month = data.replace("moneychart_re_m_", "")
+        await query.edit_message_text("حدد يوم النهاية:", reply_markup=_chart_day_keyboard(update.effective_user.id, year_month, "moneychart_re_d_", "moneychart_range"))
+        return ConversationHandler.END
+    if data.startswith("moneychart_re_d_"):
+        end_date = data.replace("moneychart_re_d_", "")
+        start_date = context.user_data.get("moneychart_range_start")
+        if not start_date or end_date < start_date:
+            await query.edit_message_text("تاريخ النهاية لازم يكون بعد تاريخ البداية أو مساوي له. أعد تحديد النطاق.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("تحديد النطاق من جديد", callback_data="moneychart_range")],
+                                                   [InlineKeyboardButton("رجوع", callback_data="moneychart_menu")]]))
+            return ConversationHandler.END
+        await _send_selected_money_chart(query, update.effective_user.id, start_date, end_date, "day")
+        return ConversationHandler.END
 
     # الإحصائيات
     if data == "stats_full_report":
