@@ -845,7 +845,11 @@ async def debt_name_input(update, context):
         await update.message.reply_text("اكتب اسم الشخص:")
         return DEBT_NAME
     context.user_data["debt_person"] = value
-    await update.message.reply_text("اكتب المبلغ:")
+    context.user_data["numeric_target"] = "debt_amount"
+    context.user_data["numeric_label"] = "أدخل مبلغ الدين:"
+    context.user_data["numeric_buffer"] = ""
+    msg, markup = numeric_keypad_markup("", "أدخل مبلغ الدين:", "debt_amount")
+    await update.message.reply_text(msg, reply_markup=markup)
     return DEBT_AMOUNT
 
 
