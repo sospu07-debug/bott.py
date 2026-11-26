@@ -6,7 +6,22 @@ from telegram import InlineKeyboardButton,InlineKeyboardMarkup
 
 log=logging.getLogger("binance_wallet")
 DB=os.getenv("BINANCE_DB_PATH","binance_wallet.sqlite3")
-KEY=os.getenv("BINANCE_API_KEY",""); SECRET=os.getenv("BINANCE_API_SECRET","")
+def load_keys():
+ # Read credentials from binance_keys.txt in the repository root.
+ values={}
+ try:
+  with open(os.getenv("BINANCE_KEYS_FILE","binance_keys.txt"),"r",encoding="utf-8") as f:
+   for line in f:
+    line=line.strip()
+    if not line or line.startswith("#") or "=" not in line:continue
+    k,v=line.split("=",1);values[k.strip()]=v.strip().strip('"').strip("'")
+ except FileNotFoundError:
+  log.warning("binance_keys.txt not found; falling back to environment variables")
+ return values
+
+_FILE_KEYS=load_keys()
+KEY=os.getenv("BINANCE_API_KEY") or _FILE_KEYS.get("API_KEY","")
+SECRET=os.getenv("BINANCE_API_SECRET") or _FILE_KEYS.get("API_SECRET","")
 BASE=os.getenv("BINANCE_API_BASE","https://api.binance.com").rstrip("/")
 ALLOWED={int(x.strip()) for x in os.getenv("BINANCE_ALLOWED_USER_IDS","").split(",") if x.strip()}
 INTERVAL=max(60,int(os.getenv("BINANCE_SYNC_SECONDS","300")))
