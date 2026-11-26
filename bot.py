@@ -3470,6 +3470,15 @@ async def cancel(update, context):
 # ============================================================
 
 def main():
+    # شغّل خادم HTTP للفحص الصحي في الخلفية حتى يبقى البوت يعمل بالتوازي.
+    health_thread = threading.Thread(
+        target=_keep_alive,
+        name="health-check-server",
+        daemon=True
+    )
+    health_thread.start()
+    print(">>> Health check server starting on Render PORT", flush=True)
+
     if not TELEGRAM_TOKEN:
         raise RuntimeError(
             "TELEGRAM_TOKEN غير موجود في متغيرات البيئة."
