@@ -16,6 +16,7 @@ except Exception:
     plt = None
 #
 import requests as http_requests
+from binance_wallet import open_menu as binance_open_menu, callback as binance_callback, post_init as binance_post_init
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application, CommandHandler, CallbackQueryHandler,
@@ -1620,6 +1621,7 @@ async def money_menu(update, context):
         ],
         [InlineKeyboardButton("سجل", callback_data="log_months")],
         [InlineKeyboardButton("رسم بياني للفلوس", callback_data="stats_full_report")],
+        [InlineKeyboardButton("🟡 Binance", callback_data="binance_menu")],
         [InlineKeyboardButton("رجوع", callback_data="back_main")],
     ]
 
@@ -2062,6 +2064,14 @@ async def category_selected(update, context):
 
     if data == "back_money":
         await money_menu(update, context)
+        return ConversationHandler.END
+
+    if data == "binance_menu":
+        await binance_open_menu(update, context)
+        return ConversationHandler.END
+
+    if data.startswith("bn_"):
+        await binance_callback(update, context)
         return ConversationHandler.END
 
 
@@ -3812,7 +3822,7 @@ def main():
 
     app = Application.builder().token(
         TELEGRAM_TOKEN
-    ).build()
+    ).post_init(binance_post_init).build()
 
     conv = ConversationHandler(
         entry_points=[
