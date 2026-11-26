@@ -1789,6 +1789,130 @@ async def body_list(query, user_id):
 # المعالج الرئيسي للأزرار
 # ============================================================
 
+def numeric_keypad_markup(value, label, target):
+    value = str(value or "")
+    rows = [
+        [InlineKeyboardButton(str(n), callback_data="numpad_" + str(n)) for n in (1, 2, 3)],
+        [InlineKeyboardButton(str(n), callback_data="numpad_" + str(n)) for n in (4, 5, 6)],
+        [InlineKeyboardButton(str(n), callback_data="numpad_" + str(n)) for n in (7, 8, 9)],
+        [InlineKeyboardButton("⌫ حذف", callback_data="numpad_back"),
+         InlineKeyboardButton("0", callback_data="numpad_0"),
+         InlineKeyboardButton(".", callback_data="numpad_dot")],
+        [InlineKeyboardButton("تأكيد", callback_data="numpad_done"),
+         InlineKeyboardButton("إلغاء", callback_data="numpad_cancel")],
+    ]
+    return "{}\n\nالقيمة: {}".format(label, value or "0"), InlineKeyboardMarkup(rows)
+
+
+async def show_numeric_keypad(query, context, target, label):
+    context.user_data["numeric_target"] = target
+    context.user_data["numeric_label"] = label
+    context.user_data["numeric_buffer"] = ""
+    msg, markup = numeric_keypad_markup("", label, target)
+    await query.edit_message_text(msg, reply_markup=markup)
+
+
+async def handle_numeric_keypad(update, context):
+    query = update.callback_query
+    await query.answer()
+    key = query.data.replace("numpad_", "", 1)
+    value = str(context.user_data.get("numeric_buffer", ""))
+    target = context.user_data.get("numeric_target")
+
+    if key == "cancel":
+        context.user_data.pop("numeric_buffer", None)
+        context.user_data.pop("numeric_target", None)
+        await query.edit_message_text("تم الإلغاء.")
+        return ConversationHandler.END
+
+    if key in tuple(str(n) for n in range(10)):
+        if len(value) < 12:
+            value += key
+    elif key == "back":
+        value = value[:-1]
+    elif key == "dot":
+        if "." not in value:
+            value = (value or "0") + "."
+    elif key == "done":
+        try:
+            number = float(value)
+            if number <= 0:
+                raise ValueError
+        except ValueError:
+            await query.answer("أدخل رقماً أكبر من صفر", show_alert=True)
+            return _numeric_state(target)
+
+        context.user_data["numeric_buffer"] = value
+
+        if target == "debt_amount":
+            context.user_data["debt_amount"] = number
+            kb = [[InlineKeyboardButton("JOD دينار أردني", callback_data="debt_currency_JOD")],
+                  [InlineKeyboardButton("USD دولار أمريكي", callback_data="debt_currency_USD")]]
+            await query.edit_message_text("اختر العملة:", reply_markup=InlineKeyboardMarkup(kb))
+            return DEBT_CURRENCY
+
+        if target == "debt_payment":
+            debt_id = context.user_data.get("debt_payment_id")
+            try:
+                add_debt_payment(debt_id, update.effective_user.id, number)
+            except Exception as e:
+                await query.edit_message_text(str(e) or "تعذر تسجيل الدفعة.")
+                return DEBT_PAYMENT_AMOUNT
+            await query.edit_message_text("تم تسجيل الدفعة وتحديث المتبقي.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("عرض الدين", callback_data="debt_view_" + str(debt_id))]]))
+            return ConversationHandler.END
+
+        if target == "debt_edit_amount":
+            debt_id = context.user_data.get("debt_edit_id")
+            try:
+                update_debt(debt_id, update.effective_user.id, "amount", number)
+            except Exception as e:
+                await query.edit_message_text(str(e) or "تعذر تعديل المبلغ.")
+                return DEBT_EDIT_VALUE
+            await query.edit_message_text("تم تعديل الدين.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("عرض الدين", callback_data="debt_view_" + str(debt_id))]]))
+            return ConversationHandler.END
+
+        if target == "body_weight":
+            if number > 500:
+                await query.answer("الوزن غير منطقي", show_alert=True)
+                return BODY_WEIGHT
+            context.user_data["body_weight"] = number
+            await show_numeric_keypad(query, context, "body_height", "أدخل طولك بالسنتيمتر:")
+            return BODY_HEIGHT
+
+        if target == "body_height":
+            if number > 300:
+                await query.answer("الطول غير منطقي", show_alert=True)
+                return BODY_HEIGHT
+            weight = context.user_data.get("body_weight")
+            if weight is None:
+                await query.edit_message_text("حدث خطأ، ابدأ من جديد.")
+                return ConversationHandler.END
+            add_body_log(update.effective_user.id, weight, number)
+            await query.edit_message_text(
+                "تم الحفظ\n-------------------\nالوزن: {:.2f} kg\nالطول: {:.2f} cm".format(weight, number),
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("رجوع", callback_data="menu_body")]]))
+            return ConversationHandler.END
+
+        return ConversationHandler.END
+
+    context.user_data["numeric_buffer"] = value
+    msg, markup = numeric_keypad_markup(value, context.user_data.get("numeric_label", "أدخل الرقم:"), target)
+    await query.edit_message_text(msg, reply_markup=markup)
+    return _numeric_state(target)
+
+
+def _numeric_state(target):
+    return {
+        "debt_amount": DEBT_AMOUNT,
+        "debt_payment": DEBT_PAYMENT_AMOUNT,
+        "debt_edit_amount": DEBT_EDIT_VALUE,
+        "body_weight": BODY_WEIGHT,
+        "body_height": BODY_HEIGHT,
+    }.get(target, ConversationHandler.END)
+
+
 async def category_selected(update, context):
     query = update.callback_query
     await query.answer()
@@ -3620,7 +3744,7 @@ def main():
 
             DEBT_TYPE: [CallbackQueryHandler(category_selected)],
             DEBT_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, debt_name_input)],
-            DEBT_AMOUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, debt_amount_input)],
+            DEBT_AMOUNT: [CallbackQueryHandler(category_selected)],
             DEBT_CURRENCY: [CallbackQueryHandler(category_selected)],
             DEBT_DATE: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, debt_date_input),
@@ -3630,9 +3754,9 @@ def main():
                 MessageHandler(filters.TEXT & ~filters.COMMAND, debt_notes_input),
                 CallbackQueryHandler(category_selected)
             ],
-            DEBT_PAYMENT_AMOUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, debt_payment_input)],
+            DEBT_PAYMENT_AMOUNT: [CallbackQueryHandler(category_selected)],
             DEBT_EDIT_FIELD: [CallbackQueryHandler(category_selected)],
-            DEBT_EDIT_VALUE: [MessageHandler(filters.TEXT & ~filters.COMMAND, debt_edit_input)],
+            DEBT_EDIT_VALUE: [MessageHandler(filters.TEXT & ~filters.COMMAND, debt_edit_input), CallbackQueryHandler(category_selected)],
 
         },
 
