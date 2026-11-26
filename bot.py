@@ -553,7 +553,7 @@ def build_full_report_chart(user_id):
     if plt is None:
         return None
 
-    # إجمالي آخر 12 شهر لكل نوع، مع إبقاء عملة الدينار والدولار منفصلة.
+    # حركة الدخل والمصروفات شهرياً، مع فصل الدينار عن الدولار.
     tx = db_execute(
         "SELECT category, amount, timestamp FROM transactions "
         "WHERE user_id=? ORDER BY timestamp",
@@ -570,7 +570,6 @@ def build_full_report_chart(user_id):
             "expense_jod": 0.0,
             "income_jod": 0.0
         })
-
         currency = "usd" if category == "dollar" else "jod"
         if amount < 0:
             bucket["expense_" + currency] += abs(amount)
@@ -578,52 +577,42 @@ def build_full_report_chart(user_id):
             bucket["income_" + currency] += amount
 
     months = sorted(monthly)[-12:]
-    totals = {
-        "expense_usd": 0.0,
-        "income_usd": 0.0,
-        "expense_jod": 0.0,
-        "income_jod": 0.0
-    }
-    for month in months:
-        for key in totals:
-            totals[key] += monthly[month][key]
+    fig, axes = plt.subplots(1, 2, figsize=(14, 6))
+    fig.suptitle("الرسم البياني للحركة المالية - آخر 12 شهر",
+                 fontsize=17, fontweight="bold", y=0.98)
 
-    cards = [
-        ("صرف دولار", totals["expense_usd"], "USD", "#e76f51"),
-        ("ربح دولار", totals["income_usd"], "USD", "#2a9d8f"),
-        ("صرف دينار", totals["expense_jod"], "JOD", "#f4a261"),
-        ("ربح دينار", totals["income_jod"], "JOD", "#457b9d")
-    ]
+    if not months:
+        for ax in axes:
+            ax.axis("off")
+        axes[0].text(0.5, 0.5, "لا توجد عمليات مالية مسجلة",
+                     ha="center", va="center", fontsize=13)
+    else:
+        x = list(range(len(months)))
+        width = 0.36
+        panels = [
+            (axes[0], "jod", "الحركة بالدينار الأردني (JOD)"),
+            (axes[1], "usd", "الحركة بالدولار الأمريكي (USD)")
+        ]
+        for ax, currency, title in panels:
+            income = [monthly[m]["income_" + currency] for m in months]
+            expense = [monthly[m]["expense_" + currency] for m in months]
+            ax.bar([v - width / 2 for v in x], income, width,
+                   label="الربح / الدخل", color="#2a9d8f", zorder=3)
+            ax.bar([v + width / 2 for v in x], expense, width,
+                   label="الصرف / المصروف", color="#e76f51", zorder=3)
+            ax.set_title(title, fontsize=13, fontweight="bold", pad=12)
+            ax.set_xlabel("الشهر", fontsize=11)
+            ax.set_ylabel("المبلغ", fontsize=11)
+            ax.set_xticks(x)
+            ax.set_xticklabels(months, rotation=35, ha="right")
+            ax.grid(axis="y", linestyle="--", alpha=0.28, zorder=0)
+            ax.legend(frameon=False, fontsize=9)
+            ax.spines["top"].set_visible(False)
+            ax.spines["right"].set_visible(False)
 
-    fig, ax = plt.subplots(figsize=(13, 4.5))
-    ax.set_xlim(0, 4)
-    ax.set_ylim(0, 1)
-    ax.axis("off")
-
-    for index, (label, amount, currency, color) in enumerate(cards):
-        x = index + 0.08
-        card = plt.Rectangle(
-            (x, 0.12), 0.84, 0.76,
-            facecolor=color, edgecolor=color,
-            linewidth=1.5, alpha=0.95
-        )
-        ax.add_patch(card)
-        ax.text(
-            x + 0.42, 0.62, label,
-            ha="center", va="center",
-            fontsize=15, fontweight="bold", color="white"
-        )
-        ax.text(
-            x + 0.42, 0.38, "{:,.2f} {}".format(amount, currency),
-            ha="center", va="center",
-            fontsize=14, fontweight="bold", color="white"
-        )
-
-    ax.set_title("ملخص الحركة المالية - آخر 12 شهر", fontsize=17, fontweight="bold", pad=14)
-
-    fig.tight_layout()
+    fig.tight_layout(rect=[0, 0, 1, 0.93])
     output = BytesIO()
-    fig.savefig(output, format="png", dpi=160, bbox_inches="tight")
+    fig.savefig(output, format="png", dpi=170, bbox_inches="tight")
     plt.close(fig)
     output.seek(0)
     return output
