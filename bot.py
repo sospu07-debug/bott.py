@@ -1590,7 +1590,7 @@ async def send_csv(update, context, date_filter, filename):
 
 def main_keyboard():
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("فلوس", callback_data="menu_money")],
+        [InlineKeyboardButton("محفظتي", callback_data="menu_money")],
         [InlineKeyboardButton("ملاحظات", callback_data="menu_notes")],
         [InlineKeyboardButton("صلاة", callback_data="menu_prayer")],
         [InlineKeyboardButton("عاداتي", callback_data="menu_habits")],
