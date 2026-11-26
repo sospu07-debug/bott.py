@@ -1479,8 +1479,6 @@ async def send_csv(update, context, date_filter, filename):
 def main_keyboard():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("فلوس", callback_data="menu_money")],
-        [InlineKeyboardButton("الإحصائيات ", callback_data="stats_menu")],
-        [InlineKeyboardButton("الديون ", callback_data="debts_menu")],
         [InlineKeyboardButton("ملاحظات", callback_data="menu_notes")],
         [InlineKeyboardButton("صلاة", callback_data="menu_prayer")],
         [InlineKeyboardButton("عاداتي", callback_data="menu_habits")],
@@ -1509,9 +1507,7 @@ async def money_menu(update, context):
             InlineKeyboardButton("دولار", callback_data="cat_dollar"),
         ],
         [InlineKeyboardButton("سجل", callback_data="log_months")],
-        [InlineKeyboardButton("الإحصائيات ", callback_data="stats_menu")],
         [InlineKeyboardButton("رسم بياني للفلوس", callback_data="stats_full_report")],
-        [InlineKeyboardButton("إدارة الديون ", callback_data="debts_menu")],
         [InlineKeyboardButton("رجوع", callback_data="back_main")],
     ]
 
