@@ -108,14 +108,14 @@ def sync_balances():
    for x in c.execute("SELECT wallet,asset,amount FROM bw_snapshots WHERE ts=?",(prev_ts,)).fetchall():
     previous[(x["wallet"],x["asset"])]=float(x["amount"])
  PRICES={x["symbol"]:float(x["price"]) for x in api("GET","/api/v3/ticker/price",signed=False)}
- ts=int(time.time());out={}
+ ts=int(time.time());out={};available_wallets={"Spot","Funding"}
  out["Spot"]=save("Spot",api("GET","/api/v3/account").get("balances",[]),ts)
  out["Funding"]=save("Funding",api("POST","/sapi/v1/asset/get-funding-asset",{}),ts)
  for name,path in (("Earn Flexible","/sapi/v1/simple-earn/flexible/position"),("Earn Locked","/sapi/v1/simple-earn/locked/position")):
-  try:out[name]=save(name,api("GET",path,{"current":1,"size":100}).get("rows",[]),ts)
+  try:out[name]=save(name,api("GET",path,{"current":1,"size":100}).get("rows",[]),ts);available_wallets.add(name)
   except Exception as e:log.warning("%s unavailable: %s",name,e);out[name]=[]
  for name,host,path in (("USD-M Futures","https://fapi.binance.com","/fapi/v3/balance"),("COIN-M Futures","https://dapi.binance.com","/dapi/v1/balance")):
-  try:out[name]=save(name,api("GET",path,{},host),ts)
+  try:out[name]=save(name,api("GET",path,{},host),ts);available_wallets.add(name)
   except Exception as e:log.warning("%s unavailable: %s",name,e);out[name]=[]
  current={}
  for wallet,items in out.items():
@@ -125,6 +125,7 @@ def sync_balances():
   if initialized:
    changes=[]
    for key in set(previous)|set(current):
+    if key[0] not in available_wallets:continue
     before=previous.get(key,0.0);after=current.get(key,0.0);delta=after-before
     if abs(delta)>1e-12:changes.append((key[0],key[1],before,after,delta))
    BALANCE_CHANGES=changes
