@@ -232,7 +232,7 @@ async def callback(update,context):
   await q.edit_message_text("⏳ جاري تحديث بيانات Binance...")
   try:
    await asyncio.to_thread(sync_balances);events=await asyncio.to_thread(sync_flows);await asyncio.to_thread(sync_income)
-     await asyncio.to_thread(save_portfolio_value)
+   await asyncio.to_thread(save_portfolio_value)
    for ek,kind,x in events:
     with conn() as c:sent=c.execute("SELECT 1 FROM bw_notified WHERE event_key=?",(ek,)).fetchone()
     if not sent:
