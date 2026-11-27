@@ -56,7 +56,7 @@ def cloud_execute(sql,params=()):
  result=first.get("response",{}).get("result",{})
  cols=[c.get("name") for c in result.get("cols",[])]
  rows=[CloudRow(zip(cols,[cell.get("value") for cell in row])) for row in result.get("rows",[])]
- return CloudCursor(rows,result.get("rows_affected",0))
+ return CloudCursor(rows,result.get("affected_row_count",result.get("rows_affected",0)))
 
 def load_keys():
  # Read the repository's .env.example file (or a path supplied by BINANCE_ENV_FILE).
@@ -84,9 +84,6 @@ BALANCE_CHANGES=[]
 S=requests.Session()
 if KEY:S.headers.update({"X-MBX-APIKEY":KEY})
 PRICES={}
-
-def conn():
- c=sqlite3.connect(DB,timeout=30);c.row_factory=sqlite3.Row;return c
 
 def init_db():
  with conn() as c:
