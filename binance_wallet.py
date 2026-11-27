@@ -193,17 +193,19 @@ def save_portfolio_value():
  return total
 
 def pnl_report():
- # Count only actual futures trading income records. Transfer, deposit,
- # withdrawal and wallet-movement records are stored elsewhere and excluded.
+ # Futures trading PnL only; transfers, deposits and withdrawals are excluded.
  with conn() as db:
   row=db.execute(
    "SELECT COALESCE(SUM(CAST(amount AS REAL)),0) AS net "
    "FROM bw_income WHERE kind IN "
    "('REALIZED_PNL','COMMISSION','FUNDING_FEE','INSURANCE_CLEAR')"
   ).fetchone()
+  first=db.execute("SELECT total_usd FROM bw_portfolio ORDER BY ts ASC LIMIT 1").fetchone()
  net=float(row["net"] or 0)
- sign="+" if net>=0 else ""
- return f"صافي ربح/خسارة تداول العقود: {sign}${net:,.2f}"
+ initial=float(first["total_usd"] or 0) if first else 0.0
+ pct=(net/initial*100.0) if initial>0 else 0.0
+ sign="+" if pct>=0 else ""
+ return f"{sign}{pct:.2f}%"
 
 def local(ms):
  return datetime.fromtimestamp(int(ms)/1000,timezone.utc).astimezone(timezone(timedelta(hours=3))).strftime("%Y-%m-%d %H:%M") if ms else "غير معروف"
