@@ -1,4 +1,4 @@
-import os,time,hmac,hashlib,logging,asyncio
+import os,time,hmac,hashlib,logging,asyncio,sys
 from urllib.parse import urlencode
 from datetime import datetime,timezone,timedelta
 import requests
@@ -44,9 +44,9 @@ def cloud_execute(sql,params=()):
   else:args.append({"type":"text","value":str(p)})
  stmt={"sql":sql}
  if args:stmt["args"]=args
- response=requests.post(TURSO_URL.rstrip("/")+"/v2/pipeline",
+ response=requests.post(url.rstrip("/")+"/v2/pipeline",
   json={"requests":[{"type":"execute","stmt":stmt},{"type":"close"}]},
-  headers={"Authorization":"Bearer "+TURSO_TOKEN,"Content-Type":"application/json"},timeout=30)
+  headers={"Authorization":"Bearer "+token,"Content-Type":"application/json"},timeout=30)
  response.raise_for_status()
  data=response.json()
  if "results" not in data:raise RuntimeError("استجابة قاعدة البيانات السحابية غير صحيحة")
