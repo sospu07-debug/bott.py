@@ -5,7 +5,6 @@ import requests
 from telegram import InlineKeyboardButton,InlineKeyboardMarkup
 
 log=logging.getLogger("binance_wallet")
-# Binance records are stored in the same cloud Turso database as the main bot.
 TURSO_URL=os.getenv("TURSO_HTTP_URL","")
 TURSO_TOKEN=os.getenv("TURSO_TOKEN","")
 
@@ -33,8 +32,10 @@ def conn():
  return CloudConnection()
 
 def cloud_execute(sql,params=()):
- if not TURSO_URL or not TURSO_TOKEN:
-  raise RuntimeError("إعدادات قاعدة البيانات السحابية TURSO_URL وTURSO_TOKEN غير موجودة")
+ config=sys.modules.get("__main__") or sys.modules.get("bot")
+ url=TURSO_URL or getattr(config,"TURSO_HTTP_URL","")
+ token=TURSO_TOKEN or getattr(config,"TURSO_TOKEN","")
+ if not url or not token:raise RuntimeError("إعدادات قاعدة البيانات السحابية غير موجودة")
  args=[]
  for p in params or ():
   if p is None:args.append({"type":"null","value":None})
@@ -56,6 +57,7 @@ def cloud_execute(sql,params=()):
  cols=[c.get("name") for c in result.get("cols",[])]
  rows=[CloudRow(zip(cols,[cell.get("value") for cell in row])) for row in result.get("rows",[])]
  return CloudCursor(rows,result.get("rows_affected",0))
+
 def load_keys():
  # Read the repository's .env.example file (or a path supplied by BINANCE_ENV_FILE).
  values={}
