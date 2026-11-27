@@ -1,4 +1,4 @@
-import os,time,hmac,hashlib,logging,asyncio,sys
+import os,time,hmac,hashlib,logging,asyncio,sys,sqlite3
 from urllib.parse import urlencode
 from datetime import datetime,timezone,timedelta
 import requests
@@ -7,6 +7,8 @@ from telegram import InlineKeyboardButton,InlineKeyboardMarkup
 log=logging.getLogger("binance_wallet")
 TURSO_URL=os.getenv("TURSO_HTTP_URL","")
 TURSO_TOKEN=os.getenv("TURSO_TOKEN","")
+LOCAL_DB_PATH=os.getenv("BINANCE_LOCAL_DB_PATH","/tmp/binance_wallet_fallback.db")
+DB_MODE="cloud"
 
 class CloudRow(dict):
  def __getitem__(self,key):
@@ -19,16 +21,46 @@ class CloudCursor:
  def fetchone(self):return self.rows[0] if self.rows else None
  def fetchall(self):return self.rows
 
+def _local_conn():
+ db=sqlite3.connect(LOCAL_DB_PATH,timeout=30)
+ db.row_factory=sqlite3.Row
+ return db
+
+def _switch_to_local(reason):
+ global DB_MODE
+ if DB_MODE!="local":
+  DB_MODE="local"
+  log.exception("Cloud Binance database unavailable; switching to temporary server storage: %s",reason)
+ with _local_conn() as db:
+  db.executescript("""
+  CREATE TABLE IF NOT EXISTS bw_snapshots(ts INTEGER,wallet TEXT,asset TEXT,amount TEXT,usd REAL,UNIQUE(ts,wallet,asset));
+  CREATE TABLE IF NOT EXISTS bw_events(event_key TEXT PRIMARY KEY,kind TEXT,asset TEXT,amount TEXT,status TEXT,ts INTEGER,source TEXT,details TEXT);
+  CREATE TABLE IF NOT EXISTS bw_income(event_key TEXT PRIMARY KEY,market TEXT,kind TEXT,asset TEXT,amount TEXT,ts INTEGER,details TEXT);
+  CREATE TABLE IF NOT EXISTS bw_state(name TEXT PRIMARY KEY,value TEXT);
+  CREATE TABLE IF NOT EXISTS bw_notified(event_key TEXT PRIMARY KEY,sent_at INTEGER);
+  CREATE TABLE IF NOT EXISTS bw_portfolio(ts INTEGER PRIMARY KEY,total_usd REAL NOT NULL);
+  CREATE INDEX IF NOT EXISTS bw_snap_ts ON bw_snapshots(ts);
+  CREATE INDEX IF NOT EXISTS bw_event_ts ON bw_events(ts);
+  """)
+
 class CloudConnection:
  def __enter__(self):return self
  def __exit__(self,*args):return False
  def execute(self,sql,params=()):
-  return cloud_execute(sql,params)
+  global DB_MODE
+  if DB_MODE=="local":
+   return _local_conn().execute(sql,params)
+  try:
+   return cloud_execute(sql,params)
+  except Exception as e:
+   _switch_to_local(e)
+   return _local_conn().execute(sql,params)
  def executescript(self,sql):
   for statement in sql.split(";"):
-   if statement.strip():cloud_execute(statement,())
+   if statement.strip():self.execute(statement,())
 
 def conn():
+ if DB_MODE=="local":return _local_conn()
  return CloudConnection()
 
 def cloud_execute(sql,params=()):
@@ -47,7 +79,7 @@ def cloud_execute(sql,params=()):
  if args:stmt["args"]=args
  response=requests.post(url.rstrip("/")+"/v2/pipeline",
   json={"requests":[{"type":"execute","stmt":stmt},{"type":"close"}]},
-  headers={"Authorization":"Bearer "+token,"Content-Type":"application/json"},timeout=30)
+  headers={"Authorization":"Bearer "+token,"Content-Type":"application/json"},timeout=20)
  response.raise_for_status()
  data=response.json()
  if "results" not in data:raise RuntimeError("استجابة قاعدة البيانات السحابية غير صحيحة")
@@ -86,17 +118,28 @@ if KEY:S.headers.update({"X-MBX-APIKEY":KEY})
 PRICES={}
 
 def init_db():
- with conn() as c:
-  c.executescript("""
-  CREATE TABLE IF NOT EXISTS bw_snapshots(ts INTEGER,wallet TEXT,asset TEXT,amount TEXT,usd REAL,UNIQUE(ts,wallet,asset));
-  CREATE TABLE IF NOT EXISTS bw_events(event_key TEXT PRIMARY KEY,kind TEXT,asset TEXT,amount TEXT,status TEXT,ts INTEGER,source TEXT,details TEXT);
-  CREATE TABLE IF NOT EXISTS bw_income(event_key TEXT PRIMARY KEY,market TEXT,kind TEXT,asset TEXT,amount TEXT,ts INTEGER,details TEXT);
-  CREATE TABLE IF NOT EXISTS bw_state(name TEXT PRIMARY KEY,value TEXT);
-  CREATE TABLE IF NOT EXISTS bw_notified(event_key TEXT PRIMARY KEY,sent_at INTEGER);
-  CREATE TABLE IF NOT EXISTS bw_portfolio(ts INTEGER PRIMARY KEY,total_usd REAL NOT NULL);
-  CREATE INDEX IF NOT EXISTS bw_snap_ts ON bw_snapshots(ts);
-  CREATE INDEX IF NOT EXISTS bw_event_ts ON bw_events(ts);
-  """)
+ global DB_MODE
+ schema="""
+ CREATE TABLE IF NOT EXISTS bw_snapshots(ts INTEGER,wallet TEXT,asset TEXT,amount TEXT,usd REAL,UNIQUE(ts,wallet,asset));
+ CREATE TABLE IF NOT EXISTS bw_events(event_key TEXT PRIMARY KEY,kind TEXT,asset TEXT,amount TEXT,status TEXT,ts INTEGER,source TEXT,details TEXT);
+ CREATE TABLE IF NOT EXISTS bw_income(event_key TEXT PRIMARY KEY,market TEXT,kind TEXT,asset TEXT,amount TEXT,ts INTEGER,details TEXT);
+ CREATE TABLE IF NOT EXISTS bw_state(name TEXT PRIMARY KEY,value TEXT);
+ CREATE TABLE IF NOT EXISTS bw_notified(event_key TEXT PRIMARY KEY,sent_at INTEGER);
+ CREATE TABLE IF NOT EXISTS bw_portfolio(ts INTEGER PRIMARY KEY,total_usd REAL NOT NULL);
+ CREATE INDEX IF NOT EXISTS bw_snap_ts ON bw_snapshots(ts);
+ CREATE INDEX IF NOT EXISTS bw_event_ts ON bw_events(ts);
+ """
+ try:
+  with conn() as c:c.executescript(schema)
+  # تأكد أن الجداول الأساسية موجودة وقابلة للقراءة والكتابة.
+  with conn() as c:
+   c.execute("SELECT COUNT(*) FROM bw_snapshots").fetchone()
+   c.execute("SELECT COUNT(*) FROM bw_state").fetchone()
+  log.info("Binance database ready (%s)",DB_MODE)
+ except Exception as e:
+  _switch_to_local(e)
+  with _local_conn() as c:c.executescript(schema)
+  log.warning("Binance is using temporary local database: %s",LOCAL_DB_PATH)
 
 def api(method,path,params=None,base=None,signed=True):
  if signed and (not KEY or not SECRET): raise RuntimeError("أضف BINANCE_API_KEY وBINANCE_API_SECRET")
