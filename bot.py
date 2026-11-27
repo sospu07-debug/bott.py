@@ -1847,7 +1847,7 @@ async def body_menu(update, context):
 
     kb = [
         [InlineKeyboardButton("تسجيل اليوم", callback_data="body_add")],
-        [InlineKeyboardButton("السجل", callback_data="body_list")],
+        [InlineKeyboardButton("سجل", callback_data="body_list")],
         [InlineKeyboardButton("رجوع", callback_data="back_main")],
     ]
 
