@@ -1918,11 +1918,12 @@ async def show_body_days(query, user_id, year_month):
     for day_num in range(1, total_days + 1):
         date = "{}-{:02d}".format(year_month, day_num)
         mark = "✅" if date in recorded else "❌"
+        # Three buttons per row gives each day/status more width on phones.
         row.append(InlineKeyboardButton(
-            "{} {}".format(day_num, mark),
+            "يوم {:02d} {}".format(day_num, mark),
             callback_data="body_day_" + date
         ))
-        if len(row) == 7:
+        if len(row) == 3:
             buttons.append(row)
             row = []
     if row:
