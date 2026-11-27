@@ -9,6 +9,7 @@ TURSO_URL=os.getenv("TURSO_HTTP_URL","")
 TURSO_TOKEN=os.getenv("TURSO_TOKEN","")
 LOCAL_DB_PATH=os.getenv("BINANCE_LOCAL_DB_PATH","/tmp/binance_wallet_fallback.db")
 DB_MODE="cloud"
+_LOCAL_CONNECTION=None
 
 class CloudRow(dict):
  def __getitem__(self,key):
@@ -22,9 +23,12 @@ class CloudCursor:
  def fetchall(self):return self.rows
 
 def _local_conn():
- db=sqlite3.connect(LOCAL_DB_PATH,timeout=30)
- db.row_factory=sqlite3.Row
- return db
+ global _LOCAL_CONNECTION
+ if _LOCAL_CONNECTION is None:
+  _LOCAL_CONNECTION=sqlite3.connect(LOCAL_DB_PATH,timeout=30,check_same_thread=False,isolation_level=None)
+  _LOCAL_CONNECTION.row_factory=sqlite3.Row
+  _LOCAL_CONNECTION.execute("PRAGMA busy_timeout=30000")
+ return _LOCAL_CONNECTION
 
 def _switch_to_local(reason):
  global DB_MODE
