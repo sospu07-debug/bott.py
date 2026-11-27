@@ -261,7 +261,8 @@ def local(ms):
 
 def menu():
  return InlineKeyboardMarkup([
- [InlineKeyboardButton("الرصيد",callback_data="bn_balance")],\n [InlineKeyboardButton("🔄 تحديث الآن",callback_data="bn_refresh")],
+ [InlineKeyboardButton("الرصيد",callback_data="bn_balance")],
+ [InlineKeyboardButton("🔄 تحديث الآن",callback_data="bn_refresh")],
  [InlineKeyboardButton("الأرباح والخسائر",callback_data="bn_pnl")],
  [InlineKeyboardButton("رجوع",callback_data="back_main")]])
 
