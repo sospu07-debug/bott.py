@@ -1,11 +1,61 @@
-import os,time,hmac,hashlib,sqlite3,logging,asyncio
+import os,time,hmac,hashlib,logging,asyncio
 from urllib.parse import urlencode
 from datetime import datetime,timezone,timedelta
 import requests
 from telegram import InlineKeyboardButton,InlineKeyboardMarkup
 
 log=logging.getLogger("binance_wallet")
-DB=os.getenv("BINANCE_DB_PATH","binance_wallet.sqlite3")
+# Binance records are stored in the same cloud Turso database as the main bot.
+TURSO_URL=os.getenv("TURSO_HTTP_URL","")
+TURSO_TOKEN=os.getenv("TURSO_TOKEN","")
+
+class CloudRow(dict):
+ def __getitem__(self,key):
+  if isinstance(key,int):return list(self.values())[key]
+  return super().__getitem__(key)
+
+class CloudCursor:
+ def __init__(self,rows=None,rowcount=0):
+  self.rows=rows or [];self.rowcount=rowcount
+ def fetchone(self):return self.rows[0] if self.rows else None
+ def fetchall(self):return self.rows
+
+class CloudConnection:
+ def __enter__(self):return self
+ def __exit__(self,*args):return False
+ def execute(self,sql,params=()):
+  return cloud_execute(sql,params)
+ def executescript(self,sql):
+  for statement in sql.split(";"):
+   if statement.strip():cloud_execute(statement,())
+
+def conn():
+ return CloudConnection()
+
+def cloud_execute(sql,params=()):
+ if not TURSO_URL or not TURSO_TOKEN:
+  raise RuntimeError("إعدادات قاعدة البيانات السحابية TURSO_URL وTURSO_TOKEN غير موجودة")
+ args=[]
+ for p in params or ():
+  if p is None:args.append({"type":"null","value":None})
+  elif isinstance(p,bool):args.append({"type":"integer","value":"1" if p else "0"})
+  elif isinstance(p,int):args.append({"type":"integer","value":str(p)})
+  elif isinstance(p,float):args.append({"type":"float","value":p})
+  else:args.append({"type":"text","value":str(p)})
+ stmt={"sql":sql}
+ if args:stmt["args"]=args
+ response=requests.post(TURSO_URL.rstrip("/")+"/v2/pipeline",
+  json={"requests":[{"type":"execute","stmt":stmt},{"type":"close"}]},
+  headers={"Authorization":"Bearer "+TURSO_TOKEN,"Content-Type":"application/json"},timeout=30)
+ response.raise_for_status()
+ data=response.json()
+ if "results" not in data:raise RuntimeError("استجابة قاعدة البيانات السحابية غير صحيحة")
+ first=data["results"][0]
+ if first.get("type")=="error":raise RuntimeError(first.get("error",{}).get("message","Turso error"))
+ result=first.get("response",{}).get("result",{})
+ cols=[c.get("name") for c in result.get("cols",[])]
+ rows=[CloudRow(zip(cols,[cell.get("value") for cell in row])) for row in result.get("rows",[])]
+ return CloudCursor(rows,result.get("rows_affected",0))
 def load_keys():
  # Read the repository's .env.example file (or a path supplied by BINANCE_ENV_FILE).
  values={}
@@ -26,7 +76,7 @@ SECRET=os.getenv("BINANCE_API_SECRET") or _FILE_KEYS.get("BINANCE_API_SECRET",""
 BASE=(os.getenv("BINANCE_API_BASE") or _FILE_KEYS.get("BINANCE_API_BASE") or "https://api.binance.com").rstrip("/")
 _allowed=os.getenv("BINANCE_ALLOWED_USER_IDS") or _FILE_KEYS.get("BINANCE_ALLOWED_USER_IDS","")
 ALLOWED={int(x.strip()) for x in _allowed.split(",") if x.strip()}
-INTERVAL=max(15,int(os.getenv("BINANCE_SYNC_SECONDS","15")))
+INTERVAL=max(60,int(os.getenv("BINANCE_SYNC_SECONDS","60")))
 FLOW_INTERVAL=max(60,int(os.getenv("BINANCE_FLOW_SYNC_SECONDS","60")))
 BALANCE_CHANGES=[]
 S=requests.Session()
@@ -212,7 +262,7 @@ def local(ms):
 
 def menu():
  return InlineKeyboardMarkup([
- [InlineKeyboardButton("الرصيد",callback_data="bn_balance")],
+ [InlineKeyboardButton("الرصيد",callback_data="bn_balance")],\n [InlineKeyboardButton("🔄 تحديث الآن",callback_data="bn_refresh")],
  [InlineKeyboardButton("الأرباح والخسائر",callback_data="bn_pnl")],
  [InlineKeyboardButton("رجوع",callback_data="back_main")]])
 
@@ -241,14 +291,14 @@ async def callback(update,context):
       try:await context.bot.send_message(uid,msg)
       except Exception:log.exception("Telegram notify")
      with conn() as c:c.execute("INSERT OR IGNORE INTO bw_notified VALUES(?,?)",(ek,int(time.time())))
-   await q.edit_message_text("✅ تمت المزامنة",reply_markup=menu())
+   await q.edit_message_text("✅ تمت المزامنة",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔄 تحديث الآن",callback_data="bn_refresh")],[InlineKeyboardButton("عرض الرصيد",callback_data="bn_balance")],[InlineKeyboardButton("رجوع",callback_data="back_main")]]))
   except Exception as e:
    log.exception("manual sync")
    await q.edit_message_text(f"فشل التحديث: {str(e)[:250]}",reply_markup=menu())
   return
  total,rows=latest()
  if k=="bn_balance":
-  text=f"💰 القيمة المسعّرة: ${total:,.2f}\n" + ("\n".join(f"{x['wallet']} · {x['asset']}: {float(x['amount']):.8g} · "+(f"${float(x['usd']):,.2f}" if x['usd'] is not None else "غير مسعّر") for x in rows[:35]) if rows else "لا توجد لقطة. اضغط مزامنة الآن.")
+  text=f"💰 القيمة المسعّرة: ${total:,.2f}\n" + ("\n".join(f"{x['wallet']} · {x['asset']}: {float(x['amount']):.8g} · "+(f"${float(x['usd']):,.2f}" if x['usd'] is not None else "غير مسعّر") for x in rows[:35]) if rows else "لا توجد لقطة محفوظة. اضغط زر تحديث الآن.")
  elif k=="bn_pnl":
   text=pnl_report()
  elif k in ("bn_deposits","bn_withdrawals","bn_transfers"):
