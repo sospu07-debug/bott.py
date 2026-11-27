@@ -1857,46 +1857,79 @@ async def body_menu(update, context):
     )
 
 
+def get_body_years(user_id):
+    rows = db_execute(
+        "SELECT DISTINCT substr(date,1,4) FROM body_log "
+        "WHERE user_id=? ORDER BY substr(date,1,4) DESC",
+        [int(user_id)]
+    )
+    return [str(row[0]) for row in rows if row and row[0]]
+
+
+def get_body_months(user_id, year):
+    rows = db_execute(
+        "SELECT DISTINCT substr(date,1,7) FROM body_log "
+        "WHERE user_id=? AND date LIKE ? ORDER BY substr(date,1,7) DESC",
+        [int(user_id), str(year) + "%"]
+    )
+    return [str(row[0]) for row in rows if row and row[0]]
+
+
+def get_body_days(user_id, year_month):
+    rows = db_execute(
+        "SELECT DISTINCT date FROM body_log "
+        "WHERE user_id=? AND date LIKE ? ORDER BY date DESC",
+        [int(user_id), str(year_month) + "%"]
+    )
+    return [str(row[0]) for row in rows if row and row[0]]
+
+
 async def body_list(query, user_id):
-    logs = get_body_logs(user_id, limit=30)
-
-    if not logs:
-        kb = [[
-            InlineKeyboardButton(
-                "رجوع",
-                callback_data="menu_body"
-            )
-        ]]
-
+    years = get_body_years(user_id)
+    if not years:
         await query.edit_message_text(
             "لا يوجد سجل.",
-            reply_markup=InlineKeyboardMarkup(kb)
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("رجوع", callback_data="menu_body")]])
         )
         return
+    buttons = [[InlineKeyboardButton(year, callback_data="body_year_" + year)] for year in years]
+    buttons.append([InlineKeyboardButton("رجوع", callback_data="menu_body")])
+    await query.edit_message_text("سجل الوزن والطول\nاختر السنة:", reply_markup=InlineKeyboardMarkup(buttons))
 
-    msg = (
-        "سجل الوزن والطول\n"
-        "-------------------\n"
+
+async def show_body_months(query, user_id, year):
+    months = get_body_months(user_id, year)
+    buttons = []
+    for month in months:
+        mon = month[5:7]
+        buttons.append([InlineKeyboardButton(MONTH_NAMES.get(mon, mon) + " " + year,
+                                             callback_data="body_month_" + month)])
+    buttons.append([InlineKeyboardButton("رجوع", callback_data="body_list")])
+    await query.edit_message_text("السنة: " + year + "\nاختر الشهر:", reply_markup=InlineKeyboardMarkup(buttons))
+
+
+async def show_body_days(query, user_id, year_month):
+    days = get_body_days(user_id, year_month)
+    buttons = [[InlineKeyboardButton("يوم " + day[8:10] + " - " + day,
+                                     callback_data="body_day_" + day)] for day in days]
+    buttons.append([InlineKeyboardButton("رجوع", callback_data="body_year_" + year_month[:4])])
+    await query.edit_message_text("الشهر: " + year_month + "\nاختر اليوم:", reply_markup=InlineKeyboardMarkup(buttons))
+
+
+async def show_body_day(query, user_id, date):
+    rows = db_execute(
+        "SELECT weight,height FROM body_log WHERE user_id=? AND date=? ORDER BY id DESC LIMIT 1",
+        [int(user_id), date]
     )
-
-    for log in logs:
-        log_id, w, h, date, ts = log
-
-        msg += str(date) + " | {:.1f} kg | {:.1f} cm\n".format(
-            float(w), float(h)
-        )
-
-    kb = [[
-        InlineKeyboardButton(
-            "رجوع",
-            callback_data="menu_body"
-        )
-    ]]
-
-    await query.edit_message_text(
-        msg,
-        reply_markup=InlineKeyboardMarkup(kb)
-    )
+    if rows:
+        weight, height = rows[0]
+        msg = ("سجل يوم " + date + "\n-------------------\n"
+               "الوزن: {:.2f} kg\nالطول: {:.2f} cm").format(float(weight), float(height))
+    else:
+        msg = "لا يوجد تسجيل لهذا اليوم."
+    buttons = [[InlineKeyboardButton("رجوع", callback_data="body_month_" + date[:7])],
+               [InlineKeyboardButton("القائمة الرئيسية", callback_data="menu_body")]]
+    await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(buttons))
 
 
 # ============================================================
@@ -2642,16 +2675,26 @@ async def category_selected(update, context):
     # ========================================================
 
     if data == "body_add":
-        await query.edit_message_text(
-            "اكتب وزنك (كغ):"
-        )
+        await show_numeric_keypad(query, context, "body_weight", "أدخل وزنك بالكيلوغرام:")
         return BODY_WEIGHT
 
     if data == "body_list":
-        await body_list(
-            query,
-            update.effective_user.id
-        )
+        await body_list(query, update.effective_user.id)
+        return ConversationHandler.END
+
+    if data.startswith("body_year_"):
+        year = data.replace("body_year_", "")
+        await show_body_months(query, update.effective_user.id, year)
+        return ConversationHandler.END
+
+    if data.startswith("body_month_"):
+        year_month = data.replace("body_month_", "")
+        await show_body_days(query, update.effective_user.id, year_month)
+        return ConversationHandler.END
+
+    if data.startswith("body_day_"):
+        date = data.replace("body_day_", "")
+        await show_body_day(query, update.effective_user.id, date)
         return ConversationHandler.END
 
     # ========================================================
@@ -3853,6 +3896,7 @@ def main():
                 pattern="^menu_body$"
             ),
 
+            CallbackQueryHandler(handle_numeric_keypad, pattern="^numpad_"),
             CallbackQueryHandler(category_selected),
 
             CallbackQueryHandler(
@@ -3900,17 +3944,13 @@ def main():
             ],
 
             BODY_WEIGHT: [
-                MessageHandler(
-                    filters.TEXT & ~filters.COMMAND,
-                    body_weight
-                )
+                CallbackQueryHandler(handle_numeric_keypad, pattern="^numpad_"),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, body_weight)
             ],
 
             BODY_HEIGHT: [
-                MessageHandler(
-                    filters.TEXT & ~filters.COMMAND,
-                    body_height
-                )
+                CallbackQueryHandler(handle_numeric_keypad, pattern="^numpad_"),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, body_height)
             ],
 
             HABIT_NAME: [
