@@ -396,4 +396,15 @@ async def background(app):
 
 async def post_init(app):
  init_db()
- if KEY and SECRET and ALLOWED:app.create_task(background(app),name="binance-wallet-sync")
+ if KEY and SECRET and ALLOWED:
+  # post_init runs before Application.start(); use asyncio.create_task here
+  # rather than Application.create_task to avoid PTB pre-start task warnings.
+  app.bot_data["binance_wallet_sync_task"]=asyncio.create_task(
+   background(app),name="binance-wallet-sync")
+
+async def post_shutdown(app):
+ task=app.bot_data.pop("binance_wallet_sync_task",None)
+ if task and not task.done():
+  task.cancel()
+  try:await task
+  except asyncio.CancelledError:pass
