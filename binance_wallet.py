@@ -193,19 +193,17 @@ def save_portfolio_value():
  return total
 
 def pnl_report():
+ # Count only actual futures trading income records. Transfer, deposit,
+ # withdrawal and wallet-movement records are stored elsewhere and excluded.
  with conn() as db:
-  rows=db.execute("SELECT ts,total_usd FROM bw_portfolio ORDER BY ts").fetchall()
- if not rows:return "لا توجد بيانات كافية بعد. انتظر أول تسجيل للمحفظة."
- first=float(rows[0]["total_usd"]);last=float(rows[-1]["total_usd"])
- delta=last-first
- pct=(delta/first*100) if first else 0.0
- sign="+" if delta>=0 else ""
- return (f"قيمة المحفظة: ${last:,.2f}\\n"
-         f"التغير منذ أول تسجيل: {sign}${delta:,.2f} ({sign}{pct:.2f}%)\\n"
-         f"عدد التسجيلات: {len(rows)}\\n"
-         f"أول تسجيل: {local(rows[0]['ts']*1000)}\\n"
-         f"آخر تسجيل: {local(rows[-1]['ts']*1000)}\\n"
-         "ملاحظة: التغير قد يتأثر بالإيداعات والسحوبات، وليس ربح تداول محققاً.")
+  row=db.execute(
+   "SELECT COALESCE(SUM(CAST(amount AS REAL)),0) AS net "
+   "FROM bw_income WHERE kind IN "
+   "('REALIZED_PNL','COMMISSION','FUNDING_FEE','INSURANCE_CLEAR')"
+  ).fetchone()
+ net=float(row["net"] or 0)
+ sign="+" if net>=0 else ""
+ return f"صافي ربح/خسارة تداول العقود: {sign}${net:,.2f}"
 
 def local(ms):
  return datetime.fromtimestamp(int(ms)/1000,timezone.utc).astimezone(timezone(timedelta(hours=3))).strftime("%Y-%m-%d %H:%M") if ms else "غير معروف"
