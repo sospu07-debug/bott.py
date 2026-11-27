@@ -26,8 +26,8 @@ SECRET=os.getenv("BINANCE_API_SECRET") or _FILE_KEYS.get("BINANCE_API_SECRET",""
 BASE=(os.getenv("BINANCE_API_BASE") or _FILE_KEYS.get("BINANCE_API_BASE") or "https://api.binance.com").rstrip("/")
 _allowed=os.getenv("BINANCE_ALLOWED_USER_IDS") or _FILE_KEYS.get("BINANCE_ALLOWED_USER_IDS","")
 ALLOWED={int(x.strip()) for x in _allowed.split(",") if x.strip()}
-INTERVAL=max(5,int(os.getenv("BINANCE_SYNC_SECONDS","5")))
-FLOW_INTERVAL=max(30,int(os.getenv("BINANCE_FLOW_SYNC_SECONDS","30")))
+INTERVAL=max(60,int(os.getenv("BINANCE_SYNC_SECONDS","60")))
+FLOW_INTERVAL=max(60,int(os.getenv("BINANCE_FLOW_SYNC_SECONDS","60")))
 BALANCE_CHANGES=[]
 S=requests.Session()
 if KEY:S.headers.update({"X-MBX-APIKEY":KEY})
@@ -44,6 +44,7 @@ def init_db():
   CREATE TABLE IF NOT EXISTS bw_income(event_key TEXT PRIMARY KEY,market TEXT,kind TEXT,asset TEXT,amount TEXT,ts INTEGER,details TEXT);
   CREATE TABLE IF NOT EXISTS bw_state(name TEXT PRIMARY KEY,value TEXT);
   CREATE TABLE IF NOT EXISTS bw_notified(event_key TEXT PRIMARY KEY,sent_at INTEGER);
+  CREATE TABLE IF NOT EXISTS bw_portfolio(ts INTEGER PRIMARY KEY,total_usd REAL NOT NULL);
   CREATE INDEX IF NOT EXISTS bw_snap_ts ON bw_snapshots(ts);
   CREATE INDEX IF NOT EXISTS bw_event_ts ON bw_events(ts);
   """)
@@ -183,19 +184,37 @@ def latest():
   rows=c.execute("SELECT wallet,asset,amount,usd FROM bw_snapshots WHERE ts=?",(r["ts"],)).fetchall()
  return sum(float(x["usd"]) for x in rows if x["usd"] is not None),rows
 
+def save_portfolio_value():
+ total,rows=latest()
+ if not rows:return None
+ ts=int(time.time())
+ with conn() as db:
+  db.execute("INSERT OR REPLACE INTO bw_portfolio VALUES(?,?)",(ts,total))
+ return total
+
+def pnl_report():
+ with conn() as db:
+  rows=db.execute("SELECT ts,total_usd FROM bw_portfolio ORDER BY ts").fetchall()
+ if not rows:return "لا توجد بيانات كافية بعد. انتظر أول تسجيل للمحفظة."
+ first=float(rows[0]["total_usd"]);last=float(rows[-1]["total_usd"])
+ delta=last-first
+ pct=(delta/first*100) if first else 0.0
+ sign="+" if delta>=0 else ""
+ return (f"قيمة المحفظة: ${last:,.2f}\\n"
+         f"التغير منذ أول تسجيل: {sign}${delta:,.2f} ({sign}{pct:.2f}%)\\n"
+         f"عدد التسجيلات: {len(rows)}\\n"
+         f"أول تسجيل: {local(rows[0]['ts']*1000)}\\n"
+         f"آخر تسجيل: {local(rows[-1]['ts']*1000)}\\n"
+         "ملاحظة: التغير قد يتأثر بالإيداعات والسحوبات، وليس ربح تداول محققاً.")
+
 def local(ms):
  return datetime.fromtimestamp(int(ms)/1000,timezone.utc).astimezone(timezone(timedelta(hours=3))).strftime("%Y-%m-%d %H:%M") if ms else "غير معروف"
 
 def menu():
  return InlineKeyboardMarkup([
- [InlineKeyboardButton("💰 رصيد Binance الحالي",callback_data="bn_balance")],
- [InlineKeyboardButton("📊 الأرباح والخسائر",callback_data="bn_pnl")],
- [InlineKeyboardButton("📥 الإيداعات",callback_data="bn_deposits"),InlineKeyboardButton("📤 السحوبات",callback_data="bn_withdrawals")],
- [InlineKeyboardButton("🔄 التحويلات",callback_data="bn_transfers")],
- [InlineKeyboardButton("📈 الإحصائيات",callback_data="bn_stats")],
- [InlineKeyboardButton("📅 التقارير",callback_data="bn_reports"),InlineKeyboardButton("🪙 توزيع العملات",callback_data="bn_coins")],
- [InlineKeyboardButton("🔄 مزامنة الآن",callback_data="bn_refresh")],
- [InlineKeyboardButton("⬅️ رجوع",callback_data="back_money")]])
+ [InlineKeyboardButton("الرصيد",callback_data="bn_balance")],
+ [InlineKeyboardButton("الأرباح والخسائر",callback_data="bn_pnl")],
+ [InlineKeyboardButton("رجوع",callback_data="back_main")]])
 
 def authorized(update):
  return bool(update.effective_user and ALLOWED and update.effective_user.id in ALLOWED)
@@ -203,7 +222,7 @@ def authorized(update):
 async def open_menu(update,context):
  q=update.callback_query
  if not authorized(update):await q.answer("غير مصرح",show_alert=True);return
- await q.answer();await q.edit_message_text("🟡 مراقبة Binance — قراءة فقط\nاختر القسم:",reply_markup=menu())
+ await q.answer();await q.edit_message_text("Binance\nاختر القسم:",reply_markup=menu())
 
 async def callback(update,context):
  q=update.callback_query
@@ -213,6 +232,7 @@ async def callback(update,context):
   await q.edit_message_text("⏳ جاري تحديث بيانات Binance...")
   try:
    await asyncio.to_thread(sync_balances);events=await asyncio.to_thread(sync_flows);await asyncio.to_thread(sync_income)
+     await asyncio.to_thread(save_portfolio_value)
    for ek,kind,x in events:
     with conn() as c:sent=c.execute("SELECT 1 FROM bw_notified WHERE event_key=?",(ek,)).fetchone()
     if not sent:
@@ -230,9 +250,7 @@ async def callback(update,context):
  if k=="bn_balance":
   text=f"💰 القيمة المسعّرة: ${total:,.2f}\n" + ("\n".join(f"{x['wallet']} · {x['asset']}: {float(x['amount']):.8g} · "+(f"${float(x['usd']):,.2f}" if x['usd'] is not None else "غير مسعّر") for x in rows[:35]) if rows else "لا توجد لقطة. اضغط مزامنة الآن.")
  elif k=="bn_pnl":
-  with conn() as c:inc=c.execute("SELECT market,kind,asset,amount,ts FROM bw_income ORDER BY ts DESC LIMIT 12").fetchall()
-  text=f"📊 قيمة الأصول: ${total:,.2f}\nصافي الربح الشامل: غير مكتمل حالياً.\nSpot يحتاج سجل الصفقات وتكلفة الاقتناء.\nFutures income محدود تاريخياً (عادةً آخر 3 أشهر).\nالأرباح غير المحققة تحتاج تقييم المراكز المفتوحة.\nالإيداعات ليست أرباحاً والسحوبات ليست خسائر والتحويلات الداخلية ليست تدفقات خارجية."
-  if inc:text+="\n\nآخر قيود Futures:\n"+"\n".join(f"{x['market']} {x['kind']}: {x['amount']} {x['asset']} · {local(x['ts'])}" for x in inc)
+  text=pnl_report()
  elif k in ("bn_deposits","bn_withdrawals","bn_transfers"):
   kind={"bn_deposits":"deposit","bn_withdrawals":"withdrawal","bn_transfers":"transfer"}[k]
   with conn() as c:ev=c.execute("SELECT asset,amount,status,ts,source FROM bw_events WHERE kind=? ORDER BY ts DESC LIMIT 20",(kind,)).fetchall()
