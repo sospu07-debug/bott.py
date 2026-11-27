@@ -1909,11 +1909,29 @@ async def show_body_months(query, user_id, year):
 
 
 async def show_body_days(query, user_id, year_month):
-    days = get_body_days(user_id, year_month)
-    buttons = [[InlineKeyboardButton("يوم " + day[8:10] + " - " + day,
-                                     callback_data="body_day_" + day)] for day in days]
+    recorded = set(get_body_days(user_id, year_month))
+    year = int(year_month[:4])
+    month = int(year_month[5:7])
+    total_days = calendar.monthrange(year, month)[1]
+    buttons = []
+    row = []
+    for day_num in range(1, total_days + 1):
+        date = "{}-{:02d}".format(year_month, day_num)
+        mark = "✅" if date in recorded else "❌"
+        row.append(InlineKeyboardButton(
+            "{} {}".format(day_num, mark),
+            callback_data="body_day_" + date
+        ))
+        if len(row) == 7:
+            buttons.append(row)
+            row = []
+    if row:
+        buttons.append(row)
     buttons.append([InlineKeyboardButton("رجوع", callback_data="body_year_" + year_month[:4])])
-    await query.edit_message_text("الشهر: " + year_month + "\nاختر اليوم:", reply_markup=InlineKeyboardMarkup(buttons))
+    await query.edit_message_text(
+        "الشهر: " + year_month + "\n✅ مسجل | ❌ غير مسجل\nاختر اليوم:",
+        reply_markup=InlineKeyboardMarkup(buttons)
+    )
 
 
 async def show_body_day(query, user_id, date):
