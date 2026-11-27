@@ -274,6 +274,7 @@ async def background(app):
   try:
    if KEY and SECRET:
     await asyncio.to_thread(sync_balances)
+    await asyncio.to_thread(save_portfolio_value)
     for wallet,asset,before,after,delta in BALANCE_CHANGES:
      direction="زيادة" if delta>0 else "نقصان"
      msg=(f"🔔 تغير رصيد Binance\\nالمحفظة: {wallet}\\nالعملة: {asset}\\n"
