@@ -1499,7 +1499,7 @@ def habit_day_keyboard(year, month):
             )
         )
 
-        if len(row) == 7:
+        if len(row) == 3:
             buttons.append(row)
             row = []
 
@@ -1840,7 +1840,7 @@ async def show_habit_calendar(query, user_id, habit_id, year_month=None):
     except Exception:
         start_display = str(habit[3])[:16].replace("T", " ")
     await query.edit_message_text(
-        "{}\nوقت البداية: {}\nاختر اليوم لتسجيل صح أو اكس:\n▫️ لم يسجل | ✅ صح | ❌ اكس".format(habit[2], start_display),
+        "{}\nوقت البداية: {}\nكل يوم يبدأ من 00:00 بتوقيت عمّان. اضغط على اليوم لتسجيل النتيجة.".format(habit[2], start_display),
         reply_markup=InlineKeyboardMarkup(buttons)
     )
 
@@ -1850,16 +1850,18 @@ async def show_habit_day_options(query, user_id, habit_id, log_date):
     if not habit:
         await query.edit_message_text("هذا العنصر غير موجود.")
         return
+    success_label = "التزمت" if habit[1] == "commit" else "تركت"
     buttons = [
-        [InlineKeyboardButton("✅ صح", callback_data="hset_{}_{}_1".format(habit_id, log_date))],
-        [InlineKeyboardButton("❌ اكس", callback_data="hset_{}_{}_0".format(habit_id, log_date))],
+        [
+            InlineKeyboardButton("✅ " + success_label, callback_data="hset_{}_{}_1".format(habit_id, log_date)),
+            InlineKeyboardButton("❌ loser خساره", callback_data="hset_{}_{}_0".format(habit_id, log_date))
+        ],
         [InlineKeyboardButton("رجوع للتقويم", callback_data="hcal_{}_{}".format(habit_id, log_date[:7]))]
     ]
     await query.edit_message_text(
-        "{}\nالتاريخ: {}\nاختر الحالة:".format(habit[2], log_date),
+        "{}\\nالتاريخ: {}\\nاختر النتيجة:".format(habit[2], log_date),
         reply_markup=InlineKeyboardMarkup(buttons)
     )
-
 
 async def show_habit_log(query, user_id, habit_id):
     habit = get_habit_by_id(habit_id, user_id)
