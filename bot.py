@@ -1431,7 +1431,8 @@ def habit_year_keyboard():
     current_year = now_amman().year
     buttons = []
 
-    for year in range(current_year, current_year + 4):
+    # Allow recording a real start date in the past as well as the current year.
+    for year in range(current_year - 10, current_year + 1):
         buttons.append([
             InlineKeyboardButton(
                 str(year),
@@ -1829,8 +1830,17 @@ async def show_habit_calendar(query, user_id, habit_id, year_month=None):
     ])
     buttons.append([InlineKeyboardButton("السجل", callback_data="hlog_" + str(habit_id))])
     buttons.append([InlineKeyboardButton("رجوع", callback_data="habit_v_" + str(habit_id))])
+    try:
+        start_dt = datetime.fromisoformat(str(habit[3]))
+        if start_dt.tzinfo is None:
+            start_dt = start_dt.replace(tzinfo=AMMAN_TZ)
+        else:
+            start_dt = start_dt.astimezone(AMMAN_TZ)
+        start_display = start_dt.strftime("%Y-%m-%d %H:%M")
+    except Exception:
+        start_display = str(habit[3])[:16].replace("T", " ")
     await query.edit_message_text(
-        "{}\nاختر اليوم لتسجيل صح أو اكس:\n▫️ لم يسجل | ✅ صح | ❌ اكس".format(habit[2]),
+        "{}\nوقت البداية: {}\nاختر اليوم لتسجيل صح أو اكس:\n▫️ لم يسجل | ✅ صح | ❌ اكس".format(habit[2], start_display),
         reply_markup=InlineKeyboardMarkup(buttons)
     )
 
@@ -1941,10 +1951,19 @@ async def show_habit_detail(query, user_id, habit_id):
         return
     h_id, kind, name, start_ts = h
     title = KIND_AR.get(kind, kind)
-    msg = "{}: {}\nاختر الشهر وسجل أيامك بعلامة صح أو اكس.".format(title, name)
+    try:
+        start_dt = datetime.fromisoformat(str(start_ts))
+        if start_dt.tzinfo is None:
+            start_dt = start_dt.replace(tzinfo=AMMAN_TZ)
+        else:
+            start_dt = start_dt.astimezone(AMMAN_TZ)
+        start_display = start_dt.strftime("%Y-%m-%d %H:%M")
+    except Exception:
+        start_display = str(start_ts)[:16].replace("T", " ")
+    msg = "{}: {}\nوقت البداية: {}\nاختر الشهر وسجل أيامك بعلامة صح أو اكس.".format(title, name, start_display)
     back = "menu_commitment" if kind == "commit" else "menu_quit"
     kb = [
-        [InlineKeyboardButton("متابعة الأيام", callback_data="hcal_{}_{}".format(h_id, now_amman().strftime("%Y-%m")))],
+        [InlineKeyboardButton("متابعة الأيام", callback_data="hcal_{}_{}".format(h_id, str(start_ts)[:7] if len(str(start_ts)) >= 7 else now_amman().strftime("%Y-%m")))],
         [InlineKeyboardButton("السجل", callback_data="hlog_" + str(h_id))],
         [InlineKeyboardButton("حذف", callback_data="habit_d_" + str(h_id))],
         [InlineKeyboardButton("رجوع للقائمة", callback_data="habit_list_" + kind)]
@@ -2482,8 +2501,15 @@ async def category_selected(update, context):
             await query.answer("خيار غير صالح.", show_alert=True)
             return ConversationHandler.END
         context.user_data["habit_kind"] = kind
-        await query.edit_message_text("اكتب اسم {}:".format("الالتزام" if kind == "commit" else "الشيء الذي تريد تركه"))
-        return HABIT_NAME
+        context.user_data.pop("habit_custom_dt", None)
+        context.user_data.pop("habit_year", None)
+        context.user_data.pop("habit_month", None)
+        context.user_data.pop("habit_day", None)
+        await query.edit_message_text(
+            "اختر سنة بداية {}:".format("الالتزام" if kind == "commit" else "الشيء الذي تريد تركه"),
+            reply_markup=habit_year_keyboard()
+        )
+        return HABIT_YEAR
 
     if data.startswith("habit_list_"):
         kind = data.replace("habit_list_", "")
@@ -2525,7 +2551,7 @@ async def category_selected(update, context):
 
         current_year = now_amman().year
 
-        if year < current_year or year > current_year + 3:
+        if year < current_year - 10 or year > current_year:
             await query.answer(
                 "السنة غير صالحة.",
                 show_alert=True
@@ -2643,15 +2669,16 @@ async def category_selected(update, context):
             selected_dt.isoformat()
         )
 
+        context.user_data["habit_custom_dt"] = selected_dt.isoformat()
         await query.edit_message_text(
             "تم اختيار وقت البداية:\n"
             "-------------------\n"
             "{}\n\n"
-            "اكتب اسم العادة:".format(
-                selected_dt.strftime("%Y-%m-%d %H:%M")
+            "اكتب اسم {}:".format(
+                selected_dt.strftime("%Y-%m-%d %H:%M"),
+                "الالتزام" if context.user_data.get("habit_kind") == "commit" else "الشيء الذي تريد تركه"
             )
         )
-
         return HABIT_NAME
 
     # الرجوع بين خطوات اختيار التاريخ
