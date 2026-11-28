@@ -270,6 +270,17 @@ def init_db():
             None
         ),
         (
+            "CREATE TABLE IF NOT EXISTS habit_daily_logs ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            "user_id INTEGER NOT NULL,"
+            "habit_id INTEGER NOT NULL,"
+            "log_date TEXT NOT NULL,"
+            "status INTEGER NOT NULL CHECK(status IN (0,1)),"
+            "created_at TEXT NOT NULL,"
+            "UNIQUE(user_id, habit_id, log_date))",
+            None
+        ),
+        (
             "CREATE TABLE IF NOT EXISTS debts (id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER NOT NULL,direction TEXT NOT NULL,person TEXT NOT NULL,amount REAL NOT NULL,currency TEXT NOT NULL,debt_date TEXT NOT NULL,notes TEXT,created_at TEXT NOT NULL)",
             None
         ),
@@ -1267,6 +1278,45 @@ def reset_habit_start(habit_id, user_id, start_ts):
     )
 
 
+def get_habits_by_kind(user_id, kind):
+    return db_execute(
+        "SELECT id, kind, name, start_ts FROM habits "
+        "WHERE user_id=? AND kind=? ORDER BY id DESC",
+        [int(user_id), str(kind)]
+    )
+
+
+def set_habit_day(user_id, habit_id, log_date, status):
+    # Verify ownership before writing a daily mark.
+    if not get_habit_by_id(habit_id, user_id):
+        return False
+    db_execute(
+        "INSERT INTO habit_daily_logs (user_id,habit_id,log_date,status,created_at) "
+        "VALUES (?,?,?,?,?) "
+        "ON CONFLICT(user_id,habit_id,log_date) DO UPDATE SET "
+        "status=excluded.status, created_at=excluded.created_at",
+        [int(user_id), int(habit_id), str(log_date), int(status), now_amman().isoformat()]
+    )
+    return True
+
+
+def get_habit_month_logs(user_id, habit_id, year_month):
+    rows = db_execute(
+        "SELECT log_date,status FROM habit_daily_logs "
+        "WHERE user_id=? AND habit_id=? AND log_date LIKE ? ORDER BY log_date",
+        [int(user_id), int(habit_id), str(year_month) + "%"]
+    )
+    return {str(row[0]): int(row[1]) for row in rows}
+
+
+def get_habit_all_logs(user_id, habit_id):
+    return db_execute(
+        "SELECT log_date,status FROM habit_daily_logs "
+        "WHERE user_id=? AND habit_id=? ORDER BY log_date DESC",
+        [int(user_id), int(habit_id)]
+    )
+
+
 def format_duration(start_ts_str):
     try:
         if "T" in start_ts_str:
@@ -1595,7 +1645,8 @@ def main_keyboard():
         [InlineKeyboardButton("Binance", callback_data="binance_menu")],
         [InlineKeyboardButton("ملاحظات", callback_data="menu_notes")],
         [InlineKeyboardButton("صلاة", callback_data="menu_prayer")],
-        [InlineKeyboardButton("عاداتي", callback_data="menu_habits")],
+        [InlineKeyboardButton("الالتزام", callback_data="menu_commitment")],
+        [InlineKeyboardButton("ترك", callback_data="menu_quit")],
         [InlineKeyboardButton("الوزن والطول", callback_data="menu_body")],
     ])
 
@@ -1698,20 +1749,121 @@ async def prayer_menu(update, context):
 
 
 async def habits_menu(update, context):
+    # Compatibility route for old menu callback.
+    await commitment_menu(update, context, "commit")
+
+
+async def commitment_menu(update, context, kind):
     query = update.callback_query
     await query.answer()
-
+    title = "الالتزام" if kind == "commit" else "ترك"
+    add_label = "إضافة التزام" if kind == "commit" else "إضافة شيء لتركه"
+    list_label = "الالتزامات المضافة" if kind == "commit" else "الأشياء المضافة للترك"
     kb = [
-        [InlineKeyboardButton("إضافة التزام", callback_data="habit_commit")],
-        [InlineKeyboardButton("إضافة قطع", callback_data="habit_quit")],
-        [InlineKeyboardButton("عاداتي الحالية", callback_data="habit_list")],
+        [InlineKeyboardButton(add_label, callback_data="habit_add_" + kind)],
+        [InlineKeyboardButton(list_label, callback_data="habit_list_" + kind)],
         [InlineKeyboardButton("رجوع", callback_data="back_main")],
     ]
+    await query.edit_message_text(title + ":", reply_markup=InlineKeyboardMarkup(kb))
 
+
+async def show_habits_list(query, user_id, kind=None):
+    habits = get_habits_by_kind(user_id, kind) if kind else get_habits(user_id)
+    if not habits:
+        title = "الالتزامات" if kind == "commit" else ("الترك" if kind == "quit" else "القائمة")
+        back = "menu_commitment" if kind == "commit" else ("menu_quit" if kind == "quit" else "back_main")
+        await query.edit_message_text(
+            "لا يوجد " + title + " مضاف حاليًا.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("رجوع", callback_data=back)]])
+        )
+        return
+    buttons = []
+    for h in habits:
+        h_id, h_kind, name, _start_ts = h
+        label = str(name)[:35]
+        buttons.append([InlineKeyboardButton(label, callback_data="habit_v_" + str(h_id))])
+    back = "menu_commitment" if kind == "commit" else ("menu_quit" if kind == "quit" else "back_main")
+    buttons.append([InlineKeyboardButton("رجوع", callback_data=back)])
+    await query.edit_message_text("اختر من القائمة:", reply_markup=InlineKeyboardMarkup(buttons))
+
+
+async def show_habit_calendar(query, user_id, habit_id, year_month=None):
+    habit = get_habit_by_id(habit_id, user_id)
+    if not habit:
+        await query.edit_message_text("هذا العنصر غير موجود.")
+        return
+    if not year_month:
+        year_month = now_amman().strftime("%Y-%m")
+    try:
+        year, month = [int(x) for x in year_month.split("-")]
+        if month < 1 or month > 12:
+            raise ValueError
+    except Exception:
+        await query.answer("الشهر غير صالح.", show_alert=True)
+        return
+    logs = get_habit_month_logs(user_id, habit_id, year_month)
+    total_days = calendar.monthrange(year, month)[1]
+    buttons, row = [], []
+    for day in range(1, total_days + 1):
+        date_value = "{}-{:02d}".format(year_month, day)
+        status = logs.get(date_value)
+        mark = "✅" if status == 1 else ("❌" if status == 0 else "▫️")
+        row.append(InlineKeyboardButton("{:02d} {}".format(day, mark),
+                                        callback_data="hday_{}_{}".format(habit_id, date_value)))
+        if len(row) == 7:
+            buttons.append(row)
+            row = []
+    if row:
+        buttons.append(row)
+    prev_month = (datetime(year, month, 1) - timedelta(days=1)).strftime("%Y-%m")
+    next_month = (datetime(year, month, 28) + timedelta(days=4)).replace(day=1).strftime("%Y-%m")
+    buttons.append([
+        InlineKeyboardButton("⬅️", callback_data="hcal_{}_{}".format(habit_id, prev_month)),
+        InlineKeyboardButton(MONTH_NAMES["{:02d}".format(month)] + " " + str(year),
+                             callback_data="hlog_" + str(habit_id)),
+        InlineKeyboardButton("➡️", callback_data="hcal_{}_{}".format(habit_id, next_month))
+    ])
+    buttons.append([InlineKeyboardButton("السجل", callback_data="hlog_" + str(habit_id))])
+    buttons.append([InlineKeyboardButton("رجوع", callback_data="habit_v_" + str(habit_id))])
     await query.edit_message_text(
-        "عاداتي:",
-        reply_markup=InlineKeyboardMarkup(kb)
+        "{}\nاختر اليوم لتسجيل صح أو اكس:\n▫️ لم يسجل | ✅ صح | ❌ اكس".format(habit[2]),
+        reply_markup=InlineKeyboardMarkup(buttons)
     )
+
+
+async def show_habit_day_options(query, user_id, habit_id, log_date):
+    habit = get_habit_by_id(habit_id, user_id)
+    if not habit:
+        await query.edit_message_text("هذا العنصر غير موجود.")
+        return
+    buttons = [
+        [InlineKeyboardButton("✅ صح", callback_data="hset_{}_{}_1".format(habit_id, log_date))],
+        [InlineKeyboardButton("❌ اكس", callback_data="hset_{}_{}_0".format(habit_id, log_date))],
+        [InlineKeyboardButton("رجوع للتقويم", callback_data="hcal_{}_{}".format(habit_id, log_date[:7]))]
+    ]
+    await query.edit_message_text(
+        "{}\nالتاريخ: {}\nاختر الحالة:".format(habit[2], log_date),
+        reply_markup=InlineKeyboardMarkup(buttons)
+    )
+
+
+async def show_habit_log(query, user_id, habit_id):
+    habit = get_habit_by_id(habit_id, user_id)
+    if not habit:
+        await query.edit_message_text("هذا العنصر غير موجود.")
+        return
+    rows = get_habit_all_logs(user_id, habit_id)
+    if not rows:
+        msg = "لا يوجد سجل مسجل حتى الآن."
+    else:
+        msg = "سجل {}:\n".format(habit[2])
+        for log_date, status in rows[:60]:
+            msg += "{} | {}\n".format("✅ صح" if int(status) == 1 else "❌ اكس", log_date)
+    kb = [
+        [InlineKeyboardButton("رجوع للتقويم", callback_data="hcal_{}_{}".format(habit_id, now_amman().strftime("%Y-%m")))],
+        [InlineKeyboardButton("رجوع", callback_data="habit_v_" + str(habit_id))]
+    ]
+    await query.edit_message_text(msg[:3900], reply_markup=InlineKeyboardMarkup(kb))
 
 
 async def habits_choose_time(update, context, kind):
@@ -1780,44 +1932,20 @@ async def show_habits_list(query, user_id):
 
 async def show_habit_detail(query, user_id, habit_id):
     h = get_habit_by_id(habit_id, user_id)
-
     if not h:
-        kb = [[
-            InlineKeyboardButton(
-                "رجوع",
-                callback_data="menu_habits"
-            )
-        ]]
-
-        await query.edit_message_text(
-            "العادة غير موجودة.",
-            reply_markup=InlineKeyboardMarkup(kb)
-        )
+        await query.edit_message_text("العنصر غير موجود.")
         return
-
     h_id, kind, name, start_ts = h
-
-    kind_ar = KIND_AR.get(kind, kind)
-    duration = format_duration(str(start_ts))
-    start_display = str(start_ts)[:16].replace("T", " ")
-
-    msg = (
-        kind_ar + ": " + str(name) + "\n"
-        "البداية: " + start_display + "\n"
-        "-------------------\n"
-        "المدة: " + duration
-    )
-
+    title = KIND_AR.get(kind, kind)
+    msg = "{}: {}\nاختر الشهر وسجل أيامك بعلامة صح أو اكس.".format(title, name)
+    back = "menu_commitment" if kind == "commit" else "menu_quit"
     kb = [
-        [InlineKeyboardButton("تحديث", callback_data="habit_r_" + str(h_id))],
+        [InlineKeyboardButton("متابعة الأيام", callback_data="hcal_{}_{}".format(h_id, now_amman().strftime("%Y-%m")))],
+        [InlineKeyboardButton("السجل", callback_data="hlog_" + str(h_id))],
         [InlineKeyboardButton("حذف", callback_data="habit_d_" + str(h_id))],
-        [InlineKeyboardButton("رجوع", callback_data="habit_list")],
+        [InlineKeyboardButton("رجوع للقائمة", callback_data="habit_list_" + kind)]
     ]
-
-    await query.edit_message_text(
-        msg,
-        reply_markup=InlineKeyboardMarkup(kb)
-    )
+    await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(kb))
 
 
 async def body_menu(update, context):
@@ -2103,6 +2231,14 @@ async def category_selected(update, context):
         await habits_menu(update, context)
         return ConversationHandler.END
 
+    if data == "menu_commitment":
+        await commitment_menu(update, context, "commit")
+        return ConversationHandler.END
+
+    if data == "menu_quit":
+        await commitment_menu(update, context, "quit")
+        return ConversationHandler.END
+
     if data == "menu_body":
         await body_menu(update, context)
         return ConversationHandler.END
@@ -2332,19 +2468,28 @@ async def category_selected(update, context):
     # العادات
     # ========================================================
 
-    if data == "habit_commit":
-        await habits_choose_time(update, context, "commit")
+    if data in ("habit_commit", "habit_quit"):
+        await habits_choose_time(update, context, "commit" if data == "habit_commit" else "quit")
         return ConversationHandler.END
 
-    if data == "habit_quit":
-        await habits_choose_time(update, context, "quit")
+    if data.startswith("habit_add_"):
+        kind = data.replace("habit_add_", "")
+        if kind not in ("commit", "quit"):
+            await query.answer("خيار غير صالح.", show_alert=True)
+            return ConversationHandler.END
+        context.user_data["habit_kind"] = kind
+        await query.edit_message_text("اكتب اسم {}:".format("الالتزام" if kind == "commit" else "الشيء الذي تريد تركه"))
+        return HABIT_NAME
+
+    if data.startswith("habit_list_"):
+        kind = data.replace("habit_list_", "")
+        if kind not in ("commit", "quit"):
+            return ConversationHandler.END
+        await show_habits_list(query, update.effective_user.id, kind)
         return ConversationHandler.END
 
     if data == "habit_list":
-        await show_habits_list(
-            query,
-            update.effective_user.id
-        )
+        await show_habits_list(query, update.effective_user.id)
         return ConversationHandler.END
 
     if data == "habit_now":
@@ -2542,13 +2687,34 @@ async def category_selected(update, context):
 
     if data.startswith("habit_v_"):
         h_id = int(data.replace("habit_v_", ""))
+        await show_habit_detail(query, update.effective_user.id, h_id)
+        return ConversationHandler.END
 
-        await show_habit_detail(
-            query,
-            update.effective_user.id,
-            h_id
-        )
+    if data.startswith("hcal_"):
+        raw = data.replace("hcal_", "", 1)
+        habit_id_text, year_month = raw.split("_", 1)
+        await show_habit_calendar(query, update.effective_user.id, int(habit_id_text), year_month)
+        return ConversationHandler.END
 
+    if data.startswith("hday_"):
+        raw = data.replace("hday_", "", 1)
+        habit_id_text, log_date = raw.split("_", 1)
+        await show_habit_day_options(query, update.effective_user.id, int(habit_id_text), log_date)
+        return ConversationHandler.END
+
+    if data.startswith("hset_"):
+        raw = data.replace("hset_", "", 1)
+        habit_id_text, log_date, status_text = raw.rsplit("_", 2)
+        ok = set_habit_day(update.effective_user.id, int(habit_id_text), log_date, int(status_text))
+        if not ok:
+            await query.edit_message_text("العنصر غير موجود.")
+            return ConversationHandler.END
+        await show_habit_calendar(query, update.effective_user.id, int(habit_id_text), log_date[:7])
+        return ConversationHandler.END
+
+    if data.startswith("hlog_"):
+        habit_id = int(data.replace("hlog_", "", 1))
+        await show_habit_log(query, update.effective_user.id, habit_id)
         return ConversationHandler.END
 
     if data.startswith("habit_r_"):
@@ -2571,22 +2737,12 @@ async def category_selected(update, context):
     if data.startswith("habit_d_"):
         h_id = int(data.replace("habit_d_", ""))
 
-        delete_habit(
-            h_id,
-            update.effective_user.id
-        )
-
-        kb = [[
-            InlineKeyboardButton(
-                "رجوع",
-                callback_data="habit_list"
-            )
-        ]]
-
-        await query.edit_message_text(
-            "تم حذف العادة.",
-            reply_markup=InlineKeyboardMarkup(kb)
-        )
+        h = get_habit_by_id(h_id, update.effective_user.id)
+        delete_habit(h_id, update.effective_user.id)
+        kind = h[1] if h else "commit"
+        back = "menu_commitment" if kind == "commit" else "menu_quit"
+        kb = [[InlineKeyboardButton("رجوع", callback_data="habit_list_" + kind)]]
+        await query.edit_message_text("تم حذف العنصر.", reply_markup=InlineKeyboardMarkup(kb))
 
         return ConversationHandler.END
 
