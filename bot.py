@@ -1265,6 +1265,10 @@ def get_habit_by_id(habit_id, user_id):
 
 def delete_habit(habit_id, user_id):
     db_execute(
+        "DELETE FROM habit_daily_logs WHERE habit_id=? AND user_id=?",
+        [int(habit_id), int(user_id)]
+    )
+    db_execute(
         "DELETE FROM habits WHERE id = ? AND user_id = ?",
         [int(habit_id), int(user_id)]
     )
@@ -3341,10 +3345,11 @@ async def habit_name(update, context):
     context.user_data.pop("habit_month", None)
     context.user_data.pop("habit_day", None)
 
+    back_menu = "menu_commitment" if kind == "commit" else "menu_quit"
     kb = [[
         InlineKeyboardButton(
             "رجوع",
-            callback_data="menu_habits"
+            callback_data=back_menu
         )
     ]]
 
