@@ -1343,6 +1343,12 @@ def set_habit_day(user_id, habit_id, log_date, status):
                 [int(user_id), int(habit_id), log_date, str(habit[3]), next_start, now_amman().isoformat()]
             )
     else:
+        restore_rows = db_execute(
+            "SELECT previous_start FROM habit_streak_history "
+            "WHERE user_id=? AND habit_id=? AND loss_date=?",
+            [int(user_id), int(habit_id), log_date]
+        )
+        corrected_loss_start = str(restore_rows[0][0]) if restore_rows else str(habit[3])
         db_execute(
             "DELETE FROM habit_streak_history WHERE user_id=? AND habit_id=? AND loss_date=?",
             [int(user_id), int(habit_id), log_date]
@@ -1353,7 +1359,12 @@ def set_habit_day(user_id, habit_id, log_date, status):
         "WHERE user_id=? AND habit_id=? ORDER BY loss_date",
         [int(user_id), int(habit_id)]
     )
-    active_start = str(events[-1][2]) if events else str(habit[3])
+    if events:
+        active_start = str(events[-1][2])
+    elif status == 1 and old_status == 0:
+        active_start = corrected_loss_start
+    else:
+        active_start = str(habit[3])
     db_execute(
         "UPDATE habits SET start_ts=? WHERE id=? AND user_id=?",
         [active_start, int(habit_id), int(user_id)]
@@ -1939,7 +1950,22 @@ async def show_habit_log(query, user_id, habit_id):
     else:
         msg = "سجل {}:\n".format(habit[2])
         for log_date, status in rows[:60]:
-            msg += "{} | {}\n".format("✅ صح" if int(status) == 1 else "❌ اكس", log_date)
+            if int(status) == 1:
+                label = "✅ التزمت/تركت"
+            else:
+                next_day = (datetime.strptime(str(log_date), "%Y-%m-%d").date() + timedelta(days=1)).isoformat()
+                label = "❌ خسارة — العداد التالي من " + next_day
+            msg += "{} | {}\\n".format(label, log_date)
+        streaks = get_habit_streak_history(user_id, habit_id)
+        if streaks:
+            msg += "\\nفترات العداد السابقة:\\n"
+            for loss_date, previous_start, next_start in streaks[:20]:
+                msg += "من {} إلى خسارة {} | بدأ من جديد {}\\n".format(
+                    str(previous_start)[:16].replace("T", " "),
+                    loss_date,
+                    str(next_start)[:16].replace("T", " ")
+                )
+
     kb = [
         [InlineKeyboardButton("رجوع للتقويم", callback_data="hcal_{}_{}".format(habit_id, now_amman().strftime("%Y-%m")))],
         [InlineKeyboardButton("رجوع", callback_data="habit_v_" + str(habit_id))]
