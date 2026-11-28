@@ -1955,12 +1955,12 @@ async def show_habit_log(query, user_id, habit_id):
             else:
                 next_day = (datetime.strptime(str(log_date), "%Y-%m-%d").date() + timedelta(days=1)).isoformat()
                 label = "❌ خسارة — العداد التالي من " + next_day
-            msg += "{} | {}\\n".format(label, log_date)
+            msg += "{} | {}\n".format(label, log_date)
         streaks = get_habit_streak_history(user_id, habit_id)
         if streaks:
-            msg += "\\nفترات العداد السابقة:\\n"
+            msg += "\nفترات العداد السابقة:\n"
             for loss_date, previous_start, next_start in streaks[:20]:
-                msg += "من {} إلى خسارة {} | بدأ من جديد {}\\n".format(
+                msg += "من {} إلى خسارة {} | بدأ من جديد {}\n".format(
                     str(previous_start)[:16].replace("T", " "),
                     loss_date,
                     str(next_start)[:16].replace("T", " ")
@@ -2011,10 +2011,10 @@ async def show_habit_detail(query, user_id, habit_id):
     duration = format_duration(str(start_ts))
     history = get_habit_streak_history(user_id, h_id)
     msg = (
-        "{}: {}\\n"
-        "بداية العداد الحالي: {}\\n"
-        "المدة الحالية: {}\\n"
-        "عدد مرات الخسارة: {}\\n"
+        "{}: {}\n"
+        "بداية العداد الحالي: {}\n"
+        "المدة الحالية: {}\n"
+        "عدد مرات الخسارة: {}\n"
         "اختر الشهر وسجل أيامك بعلامة صح أو اكس."
     ).format(title, name, start_display, duration, len(history))
     back = "menu_commitment" if kind == "commit" else "menu_quit"
