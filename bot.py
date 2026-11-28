@@ -1899,51 +1899,6 @@ async def habits_choose_time(update, context, kind):
     )
 
 
-async def show_habits_list(query, user_id):
-    habits = get_habits(user_id)
-
-    if not habits:
-        kb = [[
-            InlineKeyboardButton(
-                "رجوع",
-                callback_data="menu_habits"
-            )
-        ]]
-
-        await query.edit_message_text(
-            "لا يوجد عادات مسجلة.",
-            reply_markup=InlineKeyboardMarkup(kb)
-        )
-        return
-
-    buttons = []
-
-    for h in habits:
-        h_id, kind, name, start_ts = h
-
-        kind_ar = KIND_AR.get(kind, kind)
-        label = kind_ar + " | " + str(name)[:25]
-
-        buttons.append([
-            InlineKeyboardButton(
-                label,
-                callback_data="habit_v_" + str(h_id)
-            )
-        ])
-
-    buttons.append([
-        InlineKeyboardButton(
-            "رجوع",
-            callback_data="menu_habits"
-        )
-    ])
-
-    await query.edit_message_text(
-        "عاداتك:",
-        reply_markup=InlineKeyboardMarkup(buttons)
-    )
-
-
 async def show_habit_detail(query, user_id, habit_id):
     h = get_habit_by_id(habit_id, user_id)
     if not h:
