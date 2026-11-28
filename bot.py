@@ -293,6 +293,14 @@ def init_db():
             None
         ),
         (
+            "CREATE TABLE IF NOT EXISTS exercises (id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER NOT NULL,name TEXT NOT NULL,mode TEXT NOT NULL,photo_file_id TEXT,created_at TEXT NOT NULL)",
+            None
+        ),
+        (
+            "CREATE TABLE IF NOT EXISTS exercise_logs (id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER NOT NULL,exercise_id INTEGER NOT NULL,sets_count INTEGER NOT NULL,value_count INTEGER NOT NULL,logged_at TEXT NOT NULL)",
+            None
+        ),
+        (
             "CREATE TABLE IF NOT EXISTS debts (id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER NOT NULL,direction TEXT NOT NULL,person TEXT NOT NULL,amount REAL NOT NULL,currency TEXT NOT NULL,debt_date TEXT NOT NULL,notes TEXT,created_at TEXT NOT NULL)",
             None
         ),
@@ -1239,6 +1247,35 @@ def get_today_body(user_id):
 # العادات
 # ============================================================
 
+def add_exercise(user_id, name, mode, photo_file_id=None):
+    db_execute(
+        "INSERT INTO exercises (user_id,name,mode,photo_file_id,created_at) VALUES (?,?,?,?,?)",
+        [int(user_id), str(name), str(mode), photo_file_id, now_amman().isoformat()]
+    )
+
+
+def get_exercises(user_id):
+    return db_execute(
+        "SELECT id,name,mode,photo_file_id FROM exercises WHERE user_id=? ORDER BY id DESC",
+        [int(user_id)]
+    )
+
+
+def get_exercise(exercise_id, user_id):
+    rows = db_execute(
+        "SELECT id,name,mode,photo_file_id FROM exercises WHERE id=? AND user_id=?",
+        [int(exercise_id), int(user_id)]
+    )
+    return rows[0] if rows else None
+
+
+def save_exercise_log(user_id, exercise_id, sets_count, value_count):
+    db_execute(
+        "INSERT INTO exercise_logs (user_id,exercise_id,sets_count,value_count,logged_at) VALUES (?,?,?,?,?)",
+        [int(user_id), int(exercise_id), int(sets_count), int(value_count), now_amman().isoformat()]
+    )
+
+
 def add_habit(user_id, kind, name, start_ts):
     db_execute(
         "INSERT INTO habits "
@@ -1472,8 +1509,9 @@ KIND_AR = {
     HABIT_DAY,
     HABIT_HOUR,
     DEBT_TYPE, DEBT_NAME, DEBT_AMOUNT, DEBT_CURRENCY, DEBT_DATE, DEBT_NOTES,
-    DEBT_PAYMENT_AMOUNT, DEBT_EDIT_FIELD, DEBT_EDIT_VALUE
-) = range(23)
+    DEBT_PAYMENT_AMOUNT, DEBT_EDIT_FIELD, DEBT_EDIT_VALUE,
+    EXERCISE_NAME, EXERCISE_PHOTO, EXERCISE_SETS, EXERCISE_VALUE
+) = range(27)
 
 
 CAT_NAMES = {
@@ -1727,8 +1765,18 @@ def main_keyboard():
         [InlineKeyboardButton("ملاحظات", callback_data="menu_notes")],
         [InlineKeyboardButton("صلاة", callback_data="menu_prayer")],
         [InlineKeyboardButton("الالتزام", callback_data="menu_commitment")],
+        [InlineKeyboardButton("تمرين", callback_data="menu_exercises")],
         [InlineKeyboardButton("الوزن والطول", callback_data="menu_body")],
     ])
+
+
+async def exercises_menu(query, user_id):
+    items = get_exercises(user_id)
+    buttons = [[InlineKeyboardButton("➕ إضافة تمرين", callback_data="exercise_add")]]
+    for exercise_id, name, mode, photo_id in items:
+        buttons.append([InlineKeyboardButton(str(name)[:50], callback_data="exercise_view_" + str(exercise_id))])
+    buttons.append([InlineKeyboardButton("رجوع للقائمة الرئيسية", callback_data="back_main")])
+    await query.edit_message_text("قسم التمارين — اختر تمريناً أو أضف تمريناً جديداً:", reply_markup=InlineKeyboardMarkup(buttons))
 
 
 async def start(update, context):
@@ -2320,6 +2368,54 @@ async def category_selected(update, context):
     if data == "menu_body":
         await body_menu(update, context)
         return ConversationHandler.END
+
+    if data == "menu_exercises":
+        await exercises_menu(query, update.effective_user.id)
+        return ConversationHandler.END
+
+    if data == "exercise_add":
+        context.user_data.pop("exercise_name", None)
+        context.user_data.pop("exercise_mode", None)
+        context.user_data.pop("exercise_photo", None)
+        await query.edit_message_text("اكتب اسم التمرين:")
+        return EXERCISE_NAME
+
+    if data in ("exercise_mode_reps", "exercise_mode_seconds"):
+        context.user_data["exercise_mode"] = "reps" if data == "exercise_mode_reps" else "seconds"
+        await query.edit_message_text(
+            "أرسل صورة التمرين، أو اضغط تخطي:",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("تخطي", callback_data="exercise_photo_skip")]])
+        )
+        return EXERCISE_PHOTO
+
+    if data == "exercise_photo_skip":
+        add_exercise(update.effective_user.id, context.user_data.get("exercise_name", "تمرين"),
+                     context.user_data.get("exercise_mode", "reps"), None)
+        name = context.user_data.get("exercise_name", "التمرين")
+        context.user_data.pop("exercise_name", None)
+        context.user_data.pop("exercise_mode", None)
+        await query.edit_message_text(
+            "تمت إضافة تمرين: " + name,
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("قسم التمارين", callback_data="menu_exercises")]])
+        )
+        return ConversationHandler.END
+
+    if data.startswith("exercise_view_"):
+        exercise_id = int(data.replace("exercise_view_", "", 1))
+        exercise = get_exercise(exercise_id, update.effective_user.id)
+        if not exercise:
+            await query.edit_message_text("التمرين غير موجود.")
+            return ConversationHandler.END
+        context.user_data["exercise_id"] = exercise_id
+        context.user_data["exercise_mode"] = exercise[2]
+        prompt = "كم مجموعة عملت؟"
+        if exercise[3]:
+            try:
+                await query.message.reply_photo(photo=exercise[3], caption="التمرين: " + exercise[1])
+            except Exception:
+                pass
+        await query.edit_message_text("التمرين: {}\n{}".format(exercise[1], prompt))
+        return EXERCISE_SETS
 
     if data == "back_main":
         await query.edit_message_text(
@@ -3385,6 +3481,81 @@ async def body_height(update, context):
 # حفظ العادة
 # ============================================================
 
+async def exercise_name_input(update, context):
+    name = (update.message.text or "").strip()
+    if not name:
+        await update.message.reply_text("اكتب اسم التمرين:")
+        return EXERCISE_NAME
+    context.user_data["exercise_name"] = name[:100]
+    await update.message.reply_text(
+        "اختر نظام حساب التمرين:",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("مجموعات وعدّات", callback_data="exercise_mode_reps")],
+            [InlineKeyboardButton("بالثواني (مدة)", callback_data="exercise_mode_seconds")]
+        ])
+    )
+    return EXERCISE_PHOTO
+
+
+async def exercise_photo_input(update, context):
+    if not update.message.photo:
+        await update.message.reply_text("أرسل صورة أو اضغط تخطي.")
+        return EXERCISE_PHOTO
+    photo_id = update.message.photo[-1].file_id
+    add_exercise(update.effective_user.id, context.user_data.get("exercise_name", "تمرين"),
+                 context.user_data.get("exercise_mode", "reps"), photo_id)
+    name = context.user_data.get("exercise_name", "التمرين")
+    context.user_data.pop("exercise_name", None)
+    context.user_data.pop("exercise_mode", None)
+    await update.message.reply_text(
+        "تمت إضافة تمرين: " + name,
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("قسم التمارين", callback_data="menu_exercises")]])
+    )
+    return ConversationHandler.END
+
+
+async def exercise_sets_input(update, context):
+    try:
+        sets_count = int((update.message.text or "").strip())
+        if sets_count < 1 or sets_count > 500:
+            raise ValueError
+    except (TypeError, ValueError):
+        await update.message.reply_text("أدخل عدد المجموعات كرقم صحيح أكبر من صفر:")
+        return EXERCISE_SETS
+    context.user_data["exercise_sets"] = sets_count
+    mode = context.user_data.get("exercise_mode", "reps")
+    await update.message.reply_text("كم عدة عملت في كل مجموعة؟" if mode == "reps" else "كم ثانية عملت في كل مجموعة؟")
+    return EXERCISE_VALUE
+
+
+async def exercise_value_input(update, context):
+    try:
+        value_count = int((update.message.text or "").strip())
+        if value_count < 1 or value_count > 100000:
+            raise ValueError
+    except (TypeError, ValueError):
+        prompt = "أدخل عدد العدّات كرقم صحيح:" if context.user_data.get("exercise_mode") == "reps" else "أدخل عدد الثواني كرقم صحيح:"
+        await update.message.reply_text(prompt)
+        return EXERCISE_VALUE
+    exercise_id = context.user_data.get("exercise_id")
+    sets_count = context.user_data.get("exercise_sets")
+    if not exercise_id or not sets_count:
+        await update.message.reply_text("صار خطأ، افتح التمرين من القائمة وجرب مرة ثانية.")
+        return ConversationHandler.END
+    save_exercise_log(update.effective_user.id, exercise_id, sets_count, value_count)
+    mode = context.user_data.get("exercise_mode", "reps")
+    unit = "عدة" if mode == "reps" else "ثانية"
+    exercise = get_exercise(exercise_id, update.effective_user.id)
+    name = exercise[1] if exercise else "التمرين"
+    await update.message.reply_text(
+        "تم تسجيل التمرين ✅\n{}\nالمجموعات: {}\n{} لكل مجموعة".format(name, sets_count, value_count) + " " + unit,
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("قسم التمارين", callback_data="menu_exercises")]])
+    )
+    for key in ("exercise_id", "exercise_sets", "exercise_mode"):
+        context.user_data.pop(key, None)
+    return ConversationHandler.END
+
+
 async def habit_name(update, context):
     text = update.message.text.strip()
 
@@ -4216,6 +4387,23 @@ def main():
                     filters.TEXT & ~filters.COMMAND,
                     habit_name
                 )
+            ],
+
+            EXERCISE_NAME: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, exercise_name_input)
+            ],
+
+            EXERCISE_PHOTO: [
+                MessageHandler(filters.PHOTO, exercise_photo_input),
+                CallbackQueryHandler(category_selected, pattern="^exercise_mode_|^exercise_photo_skip$")
+            ],
+
+            EXERCISE_SETS: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, exercise_sets_input)
+            ],
+
+            EXERCISE_VALUE: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, exercise_value_input)
             ],
 
             HABIT_CUSTOM_TIME: [
