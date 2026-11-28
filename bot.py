@@ -1276,6 +1276,14 @@ def save_exercise_log(user_id, exercise_id, sets_count, value_count):
     )
 
 
+def get_exercise_logs(user_id, exercise_id, limit=30):
+    return db_execute(
+        "SELECT sets_count,value_count,logged_at FROM exercise_logs "
+        "WHERE user_id=? AND exercise_id=? ORDER BY id DESC LIMIT ?",
+        [int(user_id), int(exercise_id), int(limit)]
+    )
+
+
 def add_habit(user_id, kind, name, start_ts):
     db_execute(
         "INSERT INTO habits "
@@ -1510,7 +1518,7 @@ KIND_AR = {
     HABIT_HOUR,
     DEBT_TYPE, DEBT_NAME, DEBT_AMOUNT, DEBT_CURRENCY, DEBT_DATE, DEBT_NOTES,
     DEBT_PAYMENT_AMOUNT, DEBT_EDIT_FIELD, DEBT_EDIT_VALUE,
-    EXERCISE_NAME, EXERCISE_PHOTO, EXERCISE_SETS, EXERCISE_VALUE
+    EXERCISE_NAME, EXERCISE_MODE, EXERCISE_SETS, EXERCISE_VALUE
 ) = range(27)
 
 
@@ -2293,6 +2301,47 @@ async def handle_numeric_keypad(update, context):
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("عرض الدين", callback_data="debt_view_" + str(debt_id))]]))
             return ConversationHandler.END
 
+        if target in ("exercise_sets", "exercise_value"):
+            if number != int(number):
+                await query.answer("استخدم أرقاماً صحيحة بدون كسور.", show_alert=True)
+                return _numeric_state(target)
+            exercise_id = context.user_data.get("exercise_id")
+            exercise = get_exercise(exercise_id, update.effective_user.id) if exercise_id else None
+            if not exercise:
+                await query.edit_message_text("التمرين غير موجود، افتحه من جديد.")
+                return ConversationHandler.END
+            if target == "exercise_sets":
+                context.user_data["exercise_sets"] = int(number)
+                await show_numeric_keypad(query, context, "exercise_value", "كم عدة عملت في كل مجموعة؟")
+                return EXERCISE_VALUE
+            sets_count = int(context.user_data.get("exercise_sets", 1))
+            value_count = int(number)
+            mode = exercise[2]
+            save_exercise_log(update.effective_user.id, exercise_id, sets_count, value_count)
+            logs = get_exercise_logs(update.effective_user.id, exercise_id, 2)
+            previous = int(logs[1][1]) if len(logs) > 1 else None
+            unit = "عدة" if mode == "reps" else "ثانية"
+            improvement = ""
+            if previous is not None:
+                diff = value_count - previous
+                if diff > 0:
+                    improvement = "\n📈 تحسنت عن آخر مرة بمقدار {} {}".format(diff, unit)
+                elif diff < 0:
+                    improvement = "\nانخفض أداؤك عن آخر مرة بمقدار {} {}".format(abs(diff), unit)
+                else:
+                    improvement = "\nحافظت على نفس أدائك عن آخر مرة."
+            detail = "المجموعات: {}\n{} لكل مجموعة".format(sets_count, value_count) if mode == "reps" else "المدة: {} ثانية".format(value_count)
+            await query.edit_message_text(
+                "تم تسجيل الأداء ✅\n{}\n{}{}".format(exercise[1], detail, improvement),
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("📈 سجل التمرين والتحسن", callback_data="exercise_history_" + str(exercise_id))],
+                    [InlineKeyboardButton("رجوع للتمرين", callback_data="exercise_view_" + str(exercise_id))]
+                ])
+            )
+            for key in ("exercise_id", "exercise_sets", "exercise_mode", "numeric_buffer", "numeric_target"):
+                context.user_data.pop(key, None)
+            return ConversationHandler.END
+
         if target == "body_weight":
             if number > 500:
                 await query.answer("الوزن غير منطقي", show_alert=True)
@@ -2330,6 +2379,8 @@ def _numeric_state(target):
         "debt_edit_amount": DEBT_EDIT_VALUE,
         "body_weight": BODY_WEIGHT,
         "body_height": BODY_HEIGHT,
+        "exercise_sets": EXERCISE_SETS,
+        "exercise_value": EXERCISE_VALUE,
     }.get(target, ConversationHandler.END)
 
 
@@ -2376,26 +2427,16 @@ async def category_selected(update, context):
     if data == "exercise_add":
         context.user_data.pop("exercise_name", None)
         context.user_data.pop("exercise_mode", None)
-        context.user_data.pop("exercise_photo", None)
         await query.edit_message_text("اكتب اسم التمرين:")
         return EXERCISE_NAME
 
     if data in ("exercise_mode_reps", "exercise_mode_seconds"):
-        context.user_data["exercise_mode"] = "reps" if data == "exercise_mode_reps" else "seconds"
-        await query.edit_message_text(
-            "أرسل صورة التمرين، أو اضغط تخطي:",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("تخطي", callback_data="exercise_photo_skip")]])
-        )
-        return EXERCISE_PHOTO
-
-    if data == "exercise_photo_skip":
-        add_exercise(update.effective_user.id, context.user_data.get("exercise_name", "تمرين"),
-                     context.user_data.get("exercise_mode", "reps"), None)
-        name = context.user_data.get("exercise_name", "التمرين")
+        mode = "reps" if data == "exercise_mode_reps" else "seconds"
+        name = context.user_data.get("exercise_name", "تمرين")
+        add_exercise(update.effective_user.id, name, mode, None)
         context.user_data.pop("exercise_name", None)
-        context.user_data.pop("exercise_mode", None)
         await query.edit_message_text(
-            "تمت إضافة تمرين: " + name,
+            "تمت إضافة تمرين: " + name + ("\nنظامه: مجموعات وعدّات" if mode == "reps" else "\nنظامه: ثواني"),
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("قسم التمارين", callback_data="menu_exercises")]])
         )
         return ConversationHandler.END
@@ -2408,14 +2449,69 @@ async def category_selected(update, context):
             return ConversationHandler.END
         context.user_data["exercise_id"] = exercise_id
         context.user_data["exercise_mode"] = exercise[2]
-        prompt = "كم مجموعة عملت؟"
-        if exercise[3]:
-            try:
-                await query.message.reply_photo(photo=exercise[3], caption="التمرين: " + exercise[1])
-            except Exception:
-                pass
-        await query.edit_message_text("التمرين: {}\n{}".format(exercise[1], prompt))
+        logs = get_exercise_logs(update.effective_user.id, exercise_id, 1)
+        if logs:
+            last = logs[0]
+            last_value = str(last[1]) + (" عدة" if exercise[2] == "reps" else " ثانية")
+            last_line = "\nآخر أداء: " + last_value
+        else:
+            last_line = "\nلا يوجد سجل سابق."
+        kb = [
+            [InlineKeyboardButton("➕ تسجيل أداء", callback_data="exercise_log_" + str(exercise_id))],
+            [InlineKeyboardButton("📈 سجل التمرين والتحسن", callback_data="exercise_history_" + str(exercise_id))],
+            [InlineKeyboardButton("رجوع للتمارين", callback_data="menu_exercises")]
+        ]
+        await query.edit_message_text("التمرين: {}{}\nاختر:".format(exercise[1], last_line), reply_markup=InlineKeyboardMarkup(kb))
+        return ConversationHandler.END
+
+    if data.startswith("exercise_log_"):
+        exercise_id = int(data.replace("exercise_log_", "", 1))
+        exercise = get_exercise(exercise_id, update.effective_user.id)
+        if not exercise:
+            await query.edit_message_text("التمرين غير موجود.")
+            return ConversationHandler.END
+        context.user_data["exercise_id"] = exercise_id
+        context.user_data["exercise_mode"] = exercise[2]
+        if exercise[2] == "seconds":
+            await show_numeric_keypad(query, context, "exercise_value", "كم ثانية عملت؟")
+            return EXERCISE_VALUE
+        await show_numeric_keypad(query, context, "exercise_sets", "كم مجموعة عملت؟")
         return EXERCISE_SETS
+
+    if data.startswith("exercise_history_"):
+        exercise_id = int(data.replace("exercise_history_", "", 1))
+        exercise = get_exercise(exercise_id, update.effective_user.id)
+        if not exercise:
+            await query.edit_message_text("التمرين غير موجود.")
+            return ConversationHandler.END
+        logs = get_exercise_logs(update.effective_user.id, exercise_id, 30)
+        if not logs:
+            history_text = "لسه ما سجلت أي أداء لهذا التمرين."
+        else:
+            logs = list(reversed(logs))
+            unit = "عدة" if exercise[2] == "reps" else "ثانية"
+            lines = []
+            for index, item in enumerate(logs, 1):
+                date_text = str(item[2])[:16].replace("T", " ")
+                detail = "{} مجموعة × {} {}".format(item[0], item[1], unit) if exercise[2] == "reps" else "{} ثانية".format(item[1])
+                lines.append("{}. {} — {}".format(index, date_text, detail))
+            first_value, last_value = int(logs[0][1]), int(logs[-1][1])
+            diff = last_value - first_value
+            if diff > 0:
+                progress = "التحسن: +{} {} منذ أول تسجيل 💪".format(diff, unit)
+            elif diff < 0:
+                progress = "التغير: {} {} منذ أول تسجيل".format(diff, unit)
+            else:
+                progress = "الأداء ثابت مقارنة بأول تسجيل."
+            history_text = "📈 سجل تمرين {}\n\n".format(exercise[1]) + "\n".join(lines) + "\n\n" + progress
+        await query.edit_message_text(
+            history_text,
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("تسجيل أداء جديد", callback_data="exercise_log_" + str(exercise_id))],
+                [InlineKeyboardButton("رجوع للتمرين", callback_data="exercise_view_" + str(exercise_id))]
+            ])
+        )
+        return ConversationHandler.END
 
     if data == "back_main":
         await query.edit_message_text(
@@ -3494,66 +3590,15 @@ async def exercise_name_input(update, context):
             [InlineKeyboardButton("بالثواني (مدة)", callback_data="exercise_mode_seconds")]
         ])
     )
-    return EXERCISE_PHOTO
-
-
-async def exercise_photo_input(update, context):
-    if not update.message.photo:
-        await update.message.reply_text("أرسل صورة أو اضغط تخطي.")
-        return EXERCISE_PHOTO
-    photo_id = update.message.photo[-1].file_id
-    add_exercise(update.effective_user.id, context.user_data.get("exercise_name", "تمرين"),
-                 context.user_data.get("exercise_mode", "reps"), photo_id)
-    name = context.user_data.get("exercise_name", "التمرين")
-    context.user_data.pop("exercise_name", None)
-    context.user_data.pop("exercise_mode", None)
-    await update.message.reply_text(
-        "تمت إضافة تمرين: " + name,
-        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("قسم التمارين", callback_data="menu_exercises")]])
-    )
-    return ConversationHandler.END
+    return EXERCISE_MODE
 
 
 async def exercise_sets_input(update, context):
-    try:
-        sets_count = int((update.message.text or "").strip())
-        if sets_count < 1 or sets_count > 500:
-            raise ValueError
-    except (TypeError, ValueError):
-        await update.message.reply_text("أدخل عدد المجموعات كرقم صحيح أكبر من صفر:")
-        return EXERCISE_SETS
-    context.user_data["exercise_sets"] = sets_count
-    mode = context.user_data.get("exercise_mode", "reps")
-    await update.message.reply_text("كم عدة عملت في كل مجموعة؟" if mode == "reps" else "كم ثانية عملت في كل مجموعة؟")
-    return EXERCISE_VALUE
+    return EXERCISE_SETS
 
 
 async def exercise_value_input(update, context):
-    try:
-        value_count = int((update.message.text or "").strip())
-        if value_count < 1 or value_count > 100000:
-            raise ValueError
-    except (TypeError, ValueError):
-        prompt = "أدخل عدد العدّات كرقم صحيح:" if context.user_data.get("exercise_mode") == "reps" else "أدخل عدد الثواني كرقم صحيح:"
-        await update.message.reply_text(prompt)
-        return EXERCISE_VALUE
-    exercise_id = context.user_data.get("exercise_id")
-    sets_count = context.user_data.get("exercise_sets")
-    if not exercise_id or not sets_count:
-        await update.message.reply_text("صار خطأ، افتح التمرين من القائمة وجرب مرة ثانية.")
-        return ConversationHandler.END
-    save_exercise_log(update.effective_user.id, exercise_id, sets_count, value_count)
-    mode = context.user_data.get("exercise_mode", "reps")
-    unit = "عدة" if mode == "reps" else "ثانية"
-    exercise = get_exercise(exercise_id, update.effective_user.id)
-    name = exercise[1] if exercise else "التمرين"
-    await update.message.reply_text(
-        "تم تسجيل التمرين ✅\n{}\nالمجموعات: {}\n{} لكل مجموعة".format(name, sets_count, value_count) + " " + unit,
-        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("قسم التمارين", callback_data="menu_exercises")]])
-    )
-    for key in ("exercise_id", "exercise_sets", "exercise_mode"):
-        context.user_data.pop(key, None)
-    return ConversationHandler.END
+    return EXERCISE_VALUE
 
 
 async def habit_name(update, context):
@@ -4393,17 +4438,16 @@ def main():
                 MessageHandler(filters.TEXT & ~filters.COMMAND, exercise_name_input)
             ],
 
-            EXERCISE_PHOTO: [
-                MessageHandler(filters.PHOTO, exercise_photo_input),
-                CallbackQueryHandler(category_selected, pattern="^exercise_mode_|^exercise_photo_skip$")
+            EXERCISE_MODE: [
+                CallbackQueryHandler(category_selected, pattern="^exercise_mode_")
             ],
 
             EXERCISE_SETS: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, exercise_sets_input)
+                CallbackQueryHandler(handle_numeric_keypad, pattern="^numpad_")
             ],
 
             EXERCISE_VALUE: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, exercise_value_input)
+                CallbackQueryHandler(handle_numeric_keypad, pattern="^numpad_")
             ],
 
             HABIT_CUSTOM_TIME: [
