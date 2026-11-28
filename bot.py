@@ -1841,8 +1841,8 @@ async def commitment_menu(update, context, kind):
     add_label = "إضافة التزام" if kind == "commit" else "إضافة شيء لتركه"
     list_label = "الالتزامات المضافة" if kind == "commit" else "الأشياء المضافة للترك"
     kb = [
-        [InlineKeyboardButton(add_label, callback_data="habit_add_" + kind)],
         [InlineKeyboardButton(list_label, callback_data="habit_list_" + kind)],
+        [InlineKeyboardButton(add_label, callback_data="habit_add_" + kind)],
         [InlineKeyboardButton("رجوع", callback_data="back_main")],
     ]
     await query.edit_message_text(title + ":", reply_markup=InlineKeyboardMarkup(kb))
