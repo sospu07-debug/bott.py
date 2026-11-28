@@ -2319,11 +2319,12 @@ async def handle_numeric_keypad(update, context):
             mode = exercise[2]
             save_exercise_log(update.effective_user.id, exercise_id, sets_count, value_count)
             logs = get_exercise_logs(update.effective_user.id, exercise_id, 2)
-            previous = int(logs[1][1]) if len(logs) > 1 else None
-            unit = "عدة" if mode == "reps" else "ثانية"
+            previous = (int(logs[1][0]) * int(logs[1][1])) if mode == "reps" and len(logs) > 1 else (int(logs[1][1]) if len(logs) > 1 else None)
+            current_progress = sets_count * value_count if mode == "reps" else value_count
+            unit = "عدة إجمالية" if mode == "reps" else "ثانية"
             improvement = ""
             if previous is not None:
-                diff = value_count - previous
+                diff = current_progress - previous
                 if diff > 0:
                     improvement = "\n📈 تحسنت عن آخر مرة بمقدار {} {}".format(diff, unit)
                 elif diff < 0:
@@ -2495,12 +2496,18 @@ async def category_selected(update, context):
                 date_text = str(item[2])[:16].replace("T", " ")
                 detail = "{} مجموعة × {} {}".format(item[0], item[1], unit) if exercise[2] == "reps" else "{} ثانية".format(item[1])
                 lines.append("{}. {} — {}".format(index, date_text, detail))
-            first_value, last_value = int(logs[0][1]), int(logs[-1][1])
+            if exercise[2] == "reps":
+                first_value = int(logs[0][0]) * int(logs[0][1])
+                last_value = int(logs[-1][0]) * int(logs[-1][1])
+                progress_unit = "عدة إجمالية"
+            else:
+                first_value, last_value = int(logs[0][1]), int(logs[-1][1])
+                progress_unit = "ثانية"
             diff = last_value - first_value
             if diff > 0:
-                progress = "التحسن: +{} {} منذ أول تسجيل 💪".format(diff, unit)
+                progress = "التحسن: +{} {} منذ أول تسجيل 💪".format(diff, progress_unit)
             elif diff < 0:
-                progress = "التغير: {} {} منذ أول تسجيل".format(diff, unit)
+                progress = "التغير: {} {} منذ أول تسجيل".format(diff, progress_unit)
             else:
                 progress = "الأداء ثابت مقارنة بأول تسجيل."
             history_text = "📈 سجل تمرين {}\n\n".format(exercise[1]) + "\n".join(lines) + "\n\n" + progress
