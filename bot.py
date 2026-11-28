@@ -2665,10 +2665,6 @@ async def category_selected(update, context):
             tzinfo=AMMAN_TZ
         )
 
-        context.user_data["habit_custom_dt"] = (
-            selected_dt.isoformat()
-        )
-
         context.user_data["habit_custom_dt"] = selected_dt.isoformat()
         await query.edit_message_text(
             "تم اختيار وقت البداية:\n"
