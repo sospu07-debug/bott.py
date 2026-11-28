@@ -281,6 +281,18 @@ def init_db():
             None
         ),
         (
+            "CREATE TABLE IF NOT EXISTS habit_streak_history ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            "user_id INTEGER NOT NULL,"
+            "habit_id INTEGER NOT NULL,"
+            "loss_date TEXT NOT NULL,"
+            "previous_start TEXT NOT NULL,"
+            "next_start TEXT NOT NULL,"
+            "created_at TEXT NOT NULL,"
+            "UNIQUE(user_id, habit_id, loss_date))",
+            None
+        ),
+        (
             "CREATE TABLE IF NOT EXISTS debts (id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER NOT NULL,direction TEXT NOT NULL,person TEXT NOT NULL,amount REAL NOT NULL,currency TEXT NOT NULL,debt_date TEXT NOT NULL,notes TEXT,created_at TEXT NOT NULL)",
             None
         ),
@@ -1269,6 +1281,10 @@ def delete_habit(habit_id, user_id):
         [int(habit_id), int(user_id)]
     )
     db_execute(
+        "DELETE FROM habit_streak_history WHERE habit_id=? AND user_id=?",
+        [int(habit_id), int(user_id)]
+    )
+    db_execute(
         "DELETE FROM habits WHERE id = ? AND user_id = ?",
         [int(habit_id), int(user_id)]
     )
@@ -1291,17 +1307,66 @@ def get_habits_by_kind(user_id, kind):
 
 
 def set_habit_day(user_id, habit_id, log_date, status):
-    # Verify ownership before writing a daily mark.
-    if not get_habit_by_id(habit_id, user_id):
+    habit = get_habit_by_id(habit_id, user_id)
+    if not habit:
         return False
+    log_date = str(log_date)
+    status = int(status)
+    if status not in (0, 1):
+        return False
+
+    previous = db_execute(
+        "SELECT status FROM habit_daily_logs WHERE user_id=? AND habit_id=? AND log_date=?",
+        [int(user_id), int(habit_id), log_date]
+    )
+    old_status = int(previous[0][0]) if previous else None
+
     db_execute(
         "INSERT INTO habit_daily_logs (user_id,habit_id,log_date,status,created_at) "
         "VALUES (?,?,?,?,?) "
         "ON CONFLICT(user_id,habit_id,log_date) DO UPDATE SET "
         "status=excluded.status, created_at=excluded.created_at",
-        [int(user_id), int(habit_id), str(log_date), int(status), now_amman().isoformat()]
+        [int(user_id), int(habit_id), log_date, status, now_amman().isoformat()]
+    )
+
+    if status == 0:
+        try:
+            next_day = datetime.strptime(log_date, "%Y-%m-%d").date() + timedelta(days=1)
+            next_start = datetime.combine(next_day, datetime.min.time()).replace(tzinfo=AMMAN_TZ).isoformat()
+        except Exception:
+            return False
+        if old_status != 0:
+            db_execute(
+                "INSERT OR IGNORE INTO habit_streak_history "
+                "(user_id,habit_id,loss_date,previous_start,next_start,created_at) "
+                "VALUES (?,?,?,?,?,?)",
+                [int(user_id), int(habit_id), log_date, str(habit[3]), next_start, now_amman().isoformat()]
+            )
+    else:
+        db_execute(
+            "DELETE FROM habit_streak_history WHERE user_id=? AND habit_id=? AND loss_date=?",
+            [int(user_id), int(habit_id), log_date]
+        )
+
+    events = db_execute(
+        "SELECT loss_date,previous_start,next_start FROM habit_streak_history "
+        "WHERE user_id=? AND habit_id=? ORDER BY loss_date",
+        [int(user_id), int(habit_id)]
+    )
+    active_start = str(events[-1][2]) if events else str(habit[3])
+    db_execute(
+        "UPDATE habits SET start_ts=? WHERE id=? AND user_id=?",
+        [active_start, int(habit_id), int(user_id)]
     )
     return True
+
+
+def get_habit_streak_history(user_id, habit_id):
+    return db_execute(
+        "SELECT loss_date,previous_start,next_start FROM habit_streak_history "
+        "WHERE user_id=? AND habit_id=? ORDER BY loss_date DESC",
+        [int(user_id), int(habit_id)]
+    )
 
 
 def get_habit_month_logs(user_id, habit_id, year_month):
@@ -1917,7 +1982,15 @@ async def show_habit_detail(query, user_id, habit_id):
         start_display = start_dt.strftime("%Y-%m-%d %H:%M")
     except Exception:
         start_display = str(start_ts)[:16].replace("T", " ")
-    msg = "{}: {}\nوقت البداية: {}\nاختر الشهر وسجل أيامك بعلامة صح أو اكس.".format(title, name, start_display)
+    duration = format_duration(str(start_ts))
+    history = get_habit_streak_history(user_id, h_id)
+    msg = (
+        "{}: {}\\n"
+        "بداية العداد الحالي: {}\\n"
+        "المدة الحالية: {}\\n"
+        "عدد مرات الخسارة: {}\\n"
+        "اختر الشهر وسجل أيامك بعلامة صح أو اكس."
+    ).format(title, name, start_display, duration, len(history))
     back = "menu_commitment" if kind == "commit" else "menu_quit"
     kb = [
         [InlineKeyboardButton("متابعة الأيام", callback_data="hcal_{}_{}".format(h_id, str(start_ts)[:7] if len(str(start_ts)) >= 7 else now_amman().strftime("%Y-%m")))],
