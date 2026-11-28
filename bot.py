@@ -1372,7 +1372,7 @@ def format_duration(start_ts_str):
 
 KIND_AR = {
     "commit": "التزام",
-    "quit": "قطع"
+    "quit": "ترك"
 }
 
 
