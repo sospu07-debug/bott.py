@@ -1727,7 +1727,6 @@ def main_keyboard():
         [InlineKeyboardButton("ملاحظات", callback_data="menu_notes")],
         [InlineKeyboardButton("صلاة", callback_data="menu_prayer")],
         [InlineKeyboardButton("الالتزام", callback_data="menu_commitment")],
-        [InlineKeyboardButton("ترك", callback_data="menu_quit")],
         [InlineKeyboardButton("الوزن والطول", callback_data="menu_body")],
     ])
 
