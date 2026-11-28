@@ -1815,7 +1815,7 @@ async def show_habit_calendar(query, user_id, habit_id, year_month=None):
         mark = "✅" if status == 1 else ("❌" if status == 0 else "▫️")
         row.append(InlineKeyboardButton("{:02d} {}".format(day, mark),
                                         callback_data="hday_{}_{}".format(habit_id, date_value)))
-        if len(row) == 7:
+        if len(row) == 3:
             buttons.append(row)
             row = []
     if row:
