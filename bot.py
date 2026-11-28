@@ -1284,6 +1284,34 @@ def get_exercise_logs(user_id, exercise_id, limit=30):
     )
 
 
+def get_exercise_log_months(user_id, exercise_id):
+    rows = db_execute(
+        "SELECT DISTINCT substr(logged_at,1,7) FROM exercise_logs "
+        "WHERE user_id=? AND exercise_id=? ORDER BY 1 DESC",
+        [int(user_id), int(exercise_id)]
+    )
+    return [str(row[0]) for row in rows if row and row[0]]
+
+
+def get_exercise_log_days(user_id, exercise_id, month):
+    rows = db_execute(
+        "SELECT DISTINCT substr(logged_at,1,10) FROM exercise_logs "
+        "WHERE user_id=? AND exercise_id=? AND substr(logged_at,1,7)=? "
+        "ORDER BY 1 DESC",
+        [int(user_id), int(exercise_id), str(month)]
+    )
+    return [str(row[0]) for row in rows if row and row[0]]
+
+
+def get_exercise_logs_by_date(user_id, exercise_id, date):
+    return db_execute(
+        "SELECT sets_count,value_count,logged_at FROM exercise_logs "
+        "WHERE user_id=? AND exercise_id=? AND substr(logged_at,1,10)=? "
+        "ORDER BY logged_at ASC",
+        [int(user_id), int(exercise_id), str(date)]
+    )
+
+
 def add_habit(user_id, kind, name, start_ts):
     db_execute(
         "INSERT INTO habits "
@@ -2485,35 +2513,87 @@ async def category_selected(update, context):
         if not exercise:
             await query.edit_message_text("التمرين غير موجود.")
             return ConversationHandler.END
-        logs = get_exercise_logs(update.effective_user.id, exercise_id, 30)
-        if not logs:
-            history_text = "لسه ما سجلت أي أداء لهذا التمرين."
-        else:
-            logs = list(reversed(logs))
-            unit = "عدة" if exercise[2] == "reps" else "ثانية"
-            lines = []
-            for index, item in enumerate(logs, 1):
-                date_text = str(item[2])[:16].replace("T", " ")
-                detail = "{} مجموعة × {} {}".format(item[0], item[1], unit) if exercise[2] == "reps" else "{} ثانية".format(item[1])
-                lines.append("{}. {} — {}".format(index, date_text, detail))
-            if exercise[2] == "reps":
-                first_value = int(logs[0][0]) * int(logs[0][1])
-                last_value = int(logs[-1][0]) * int(logs[-1][1])
-                progress_unit = "عدة إجمالية"
-            else:
-                first_value, last_value = int(logs[0][1]), int(logs[-1][1])
-                progress_unit = "ثانية"
-            diff = last_value - first_value
-            if diff > 0:
-                progress = "التحسن: +{} {} منذ أول تسجيل 💪".format(diff, progress_unit)
-            elif diff < 0:
-                progress = "التغير: {} {} منذ أول تسجيل".format(diff, progress_unit)
-            else:
-                progress = "الأداء ثابت مقارنة بأول تسجيل."
-            history_text = "📈 سجل تمرين {}\n\n".format(exercise[1]) + "\n".join(lines) + "\n\n" + progress
+        months = get_exercise_log_months(update.effective_user.id, exercise_id)
+        if not months:
+            await query.edit_message_text(
+                "لسه ما سجلت أي أداء لهذا التمرين.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("تسجيل أداء", callback_data="exercise_log_" + str(exercise_id))],
+                    [InlineKeyboardButton("رجوع للتمرين", callback_data="exercise_view_" + str(exercise_id))]
+                ])
+            )
+            return ConversationHandler.END
+        buttons = []
+        for month in months:
+            year, mon = month.split("-")
+            label = MONTH_NAMES.get(mon, mon) + " " + year
+            buttons.append([InlineKeyboardButton(
+                label, callback_data="exercise_month_{}_{}".format(exercise_id, month)
+            )])
+        buttons.append([InlineKeyboardButton("رجوع للتمرين", callback_data="exercise_view_" + str(exercise_id))])
         await query.edit_message_text(
-            history_text,
+            "📅 سجل تمرين {}\nاختر الشهر:".format(exercise[1]),
+            reply_markup=InlineKeyboardMarkup(buttons)
+        )
+        return ConversationHandler.END
+
+    if data.startswith("exercise_month_"):
+        parts = data.split("_", 2)
+        exercise_id, month = int(parts[2].split("_", 1)[0]), parts[2].split("_", 1)[1]
+        exercise = get_exercise(exercise_id, update.effective_user.id)
+        if not exercise:
+            await query.edit_message_text("التمرين غير موجود.")
+            return ConversationHandler.END
+        days = get_exercise_log_days(update.effective_user.id, exercise_id, month)
+        buttons = [[InlineKeyboardButton(
+            "يوم " + day.split("-")[2],
+            callback_data="exercise_day_{}_{}".format(exercise_id, day)
+        )] for day in days]
+        buttons.append([InlineKeyboardButton("رجوع للشهور", callback_data="exercise_history_" + str(exercise_id))])
+        await query.edit_message_text(
+            "سجل {} — {}\nاختر اليوم:".format(exercise[1], month),
+            reply_markup=InlineKeyboardMarkup(buttons)
+        )
+        return ConversationHandler.END
+
+    if data.startswith("exercise_day_"):
+        parts = data.split("_", 2)
+        rest = parts[2]
+        exercise_id_text, date = rest.split("_", 1)
+        exercise_id = int(exercise_id_text)
+        exercise = get_exercise(exercise_id, update.effective_user.id)
+        if not exercise:
+            await query.edit_message_text("التمرين غير موجود.")
+            return ConversationHandler.END
+        logs = get_exercise_logs_by_date(update.effective_user.id, exercise_id, date)
+        if not logs:
+            await query.edit_message_text("ما في تسجيلات بهذا اليوم.")
+            return ConversationHandler.END
+        mode = exercise[2]
+        if mode == "reps":
+            total = sum(int(item[0]) * int(item[1]) for item in logs)
+            unit = "عدة إجمالية"
+            lines = [
+                "{}. {} مجموعة × {} عدة".format(i, item[0], item[1])
+                for i, item in enumerate(logs, 1)
+            ]
+        else:
+            total = sum(int(item[1]) for item in logs)
+            unit = "ثانية"
+            lines = [
+                "{}. {} ثانية".format(i, item[1])
+                for i, item in enumerate(logs, 1)
+            ]
+        msg = (
+            "📅 سجل يوم {}\nالتمرين: {}\n"
+            "-------------------\n{}\n"
+            "عدد مرات التسجيل: {}\n"
+            "مجموع إنجازك اليوم: {} {}"
+        ).format(date, exercise[1], "\n".join(lines), len(logs), total, unit)
+        await query.edit_message_text(
+            msg,
             reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("رجوع للأيام", callback_data="exercise_month_{}_{}".format(exercise_id, date[:7]))],
                 [InlineKeyboardButton("تسجيل أداء جديد", callback_data="exercise_log_" + str(exercise_id))],
                 [InlineKeyboardButton("رجوع للتمرين", callback_data="exercise_view_" + str(exercise_id))]
             ])
